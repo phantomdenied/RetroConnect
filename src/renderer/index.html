@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>RetroConnect</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <svg class="brand-icon" viewBox="0 0 32 32" aria-hidden="true">
+          <rect x="3" y="9" width="26" height="15" rx="7" fill="currentColor"/>
+          <rect x="8" y="13" width="2.5" height="7" fill="var(--bg)"/>
+          <rect x="5.75" y="15.25" width="7" height="2.5" fill="var(--bg)"/>
+          <circle cx="21" cy="15" r="1.8" fill="var(--bg)"/>
+          <circle cx="24.5" cy="18.5" r="1.8" fill="var(--bg)"/>
+        </svg>
+        <span>RetroConnect</span>
+      </div>
+      <nav class="nav">
+        <button class="nav-item active" data-view="games">Games</button>
+        <button class="nav-item" data-view="buddy">Connect</button>
+        <button class="nav-item" data-view="settings">Settings</button>
+      </nav>
+      <div id="buddy-card" class="buddy-card"></div>
+    </aside>
+
+    <main class="main">
+      <div id="banner"></div>
+      <section id="view-games" class="view"></section>
+      <section id="view-buddy" class="view" hidden></section>
+      <section id="view-settings" class="view" hidden></section>
+    </main>
+
+    <footer id="activity" class="activity">
+      <div class="activity-bar">
+        <span id="activity-status" class="activity-status">Ready</span>
+        <div id="progress" class="progress" hidden><div class="progress-fill"></div><span class="progress-label"></span></div>
+        <button id="activity-toggle" class="link-btn">Activity</button>
+      </div>
+      <ol id="log" class="log" hidden></ol>
+    </footer>
+  </div>
+
+  <div id="wizard" class="wizard" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

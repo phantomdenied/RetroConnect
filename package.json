@@ -1,0 +1,73 @@
+{
+  "name": "retroconnect",
+  "productName": "RetroConnect",
+  "version": "0.2.0",
+  "description": "Play RetroArch netplay with a friend: the host's exact core and ROM are synced to the guest automatically.",
+  "main": "src/main/main.js",
+  "author": {
+    "name": "phantomdenied",
+    "email": "phantomdenied@users.noreply.github.com"
+  },
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "dist": "electron-builder",
+    "dist:linux": "electron-builder --linux",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
+  },
+  "dependencies": {
+    "fflate": "0.8.3"
+  },
+  "devDependencies": {
+    "electron": "44.7.2",
+    "electron-builder": "26.17.0"
+  },
+  "build": {
+    "appId": "io.github.phantomdenied.retroconnect",
+    "productName": "RetroConnect",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-${version}-win-setup.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.games"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Game",
+      "maintainer": "phantomdenied",
+      "syncDesktopName": true
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "publish": null,
+    "portable": {
+      "artifactName": "${productName}-${version}-win-portable.${ext}"
+    }
+  },
+  "homepage": "https://github.com/phantomdenied/RetroConnect",
+  "desktopName": "retroconnect.desktop"
+}

@@ -1,105 +1,98 @@
 # RetroConnect
 
-Play RetroArch netplay with a friend, with no "content mismatch" errors.
-The host picks a game, and the guest automatically gets the **exact same core
-and ROM** (sent straight from the host when missing or different), then
-RetroArch launches and connects for both of you.
+A desktop app for playing RetroArch netplay with a friend. Whoever hosts, the
+other player automatically gets the **exact same core and ROM**, sent straight
+from the host, so there are no "content mismatch" errors or desyncs from
+mismatched files. Then RetroArch launches and connects for both of you.
 
-- **ROMs** are matched by SHA-256. If you already have the identical file
-  (under any name) it's used; otherwise it's downloaded from the host.
-- **Cores** on the same OS/CPU are copied from the host so you run the
-  identical build. Across different OSes (Windows vs. Mac, say) a native
-  binary can't be shared, so the same core is fetched from the libretro
-  buildbot instead, with a warning to keep versions in step.
+**What it does**
+
+- **Games list** shows both libraries side by side: *Ready to play*, *Buddy has
+  it*, *Different version*, *Only you*. One click gets a game from your buddy.
+- **Host** a game and your buddy's app shows a **Join** banner and a
+  desktop notification.
+- **Join** checks the core and ROM by content hash, downloads anything missing
+  or different (resumable, verified), and launches RetroArch connected to the
+  host.
+- **Cross-platform**: a Windows core can't run on a Mac, so when you're on
+  different systems the same core is downloaded from the official libretro
+  buildbot instead.
 - Anything replaced is kept as `<file>.<timestamp>.old`, never deleted.
-- Downloads resume if interrupted and are hash-verified before use.
 
-Pure Python 3.9+, no dependencies.
+## Install
 
-## Install (both of you)
+Download the installer for your system from the
+[Releases page](https://github.com/phantomdenied/RetroConnect/releases):
 
-```sh
-git clone https://github.com/phantomdenied/retroconnect
-cd retroconnect
-pip install .            # or run without installing: python -m retroconnect ...
-retroconnect init        # one person leaves the secret blank to generate it,
-                         # then sends it to the other, who pastes it in
-retroconnect doctor      # checks RetroArch, folders, and whether your buddy is reachable
-```
-
-Put your ROMs in the ROM folder you chose during `init` (subfolders are fine).
-
-## Playing
-
-**Host:**
-
-```sh
-retroconnect host "super mario world"   # any part of the file name
-```
-
-This starts the sync server and launches RetroArch as netplay host. It picks
-the core from the file extension (`.sfc` → snes9x, `.nes` → fceumm, …); use
-`--core bsnes_libretro` to override it.
-
-**Guest:**
-
-```sh
-retroconnect join
-```
-
-This sees what the host is playing, downloads anything missing or mismatched,
-and launches RetroArch connected to the host.
-
-**Other commands:**
-
-| Command | What it does |
+| System | File |
 |---|---|
-| `retroconnect games` | Compare libraries: games you both have, only one has, or different versions of |
-| `retroconnect sync --all` | Pull the host's whole library ahead of time (host runs `retroconnect serve`) |
-| `retroconnect sync zelda` | Pull only matching ROMs |
-| `retroconnect scan` | List your ROMs and cores |
-| `retroconnect config show` | Show settings (`config set <key> <value>` to change one) |
+| Windows | `RetroConnect-x.y.z-win-setup.exe` (or `-win-portable.exe`, no install) |
+| macOS | `RetroConnect-x.y.z-mac-arm64.dmg` (Apple Silicon) or `-mac-x64.dmg` (Intel) |
+| Linux | `.AppImage` (any distro) or `.deb` |
+
+The builds aren't code-signed, so the first launch needs one extra step:
+
+- **Windows:** on "Windows protected your PC", click **More info → Run anyway**.
+- **macOS:** right-click the app → **Open**. If macOS says it's "damaged", run
+  `xattr -cr /Applications/RetroConnect.app` in Terminal once.
+- **Linux AppImage:** `chmod +x RetroConnect-*.AppImage`, then run it.
+
+You also need [RetroArch](https://www.retroarch.com/?page=platforms) installed.
+RetroConnect finds it automatically in the usual places.
+
+## First run
+
+The setup wizard asks for:
+
+1. **Your nickname and ROM folder.** Games your buddy sends go here too.
+2. **RetroArch.** Usually detected automatically.
+3. **Pairing.** One of you clicks *I'm first* and sends the generated secret
+   to the other, who picks *My buddy sent me one* and pastes it.
+
+Then, on the **Connect** page, enter each other's address.
 
 ## Connecting
 
-Set the mode with `retroconnect config set connection_mode <mode>`. The guest
-always sets `peer_address` to the host's address.
+| Mode | Setup |
+|---|---|
+| **Tailscale** (recommended) | Both install [Tailscale](https://tailscale.com/download). Use each other's `100.x.y.z` address. Traffic is encrypted and there's no router setup. |
+| **Direct** | Same Wi-Fi: use the LAN address shown on the Connect page. Over the internet: the host forwards TCP **55440** (file sync) and **55435** (netplay). File traffic is unencrypted in this mode. |
+| **Relay** | Gameplay goes through a libretro relay server, and the guest joins from RetroArch's *Netplay → Refresh Host List*. Downloading games still needs port 55440 reachable, so pair it with Tailscale or a port forward. |
 
-| Mode | Install | What the host opens |
-|---|---|---|
-| `tailscale` (recommended) | Tailscale on both PCs | Nothing. Use the host's `100.x.y.z` Tailscale IP as `peer_address`. Traffic is encrypted. |
-| `direct` | Nothing | Forward TCP **55440** (file sync) and **55435** (netplay) to the host PC. Use the host's public IP. |
-| `relay` | Nothing | Netplay goes through a libretro relay (`relay_server`: nyc, madrid, saopaulo, singapore), and the guest joins from RetroArch's **Netplay → Refresh Host List**. **File sync still needs port 55440 reachable**, so pair it with Tailscale or a port forward, or sync ahead of time on a LAN. |
-
-On the same home network, `direct` with the LAN IP just works.
-
-## Security notes
-
-- Every request needs the shared secret, and the host only serves files from
-  its own scan, looked up by hash, so no other paths on the PC are reachable.
-- In `direct` mode, transfers (including the secret) are unencrypted HTTP.
-  Use Tailscale if you're going over the internet.
-- Only share ROMs you own, and only between yourselves.
-
-## Settings
-
-Stored in `config.json` (find it with `retroconnect config path`):
-
-| Key | Default | |
-|---|---|---|
-| `nickname` | your username | shown in netplay |
-| `roms_dir` | `~/RetroConnect/roms` | |
-| `cores_dir` | auto-detected | RetroArch's `cores` folder |
-| `retroarch_command` | auto-detected | e.g. `flatpak run org.libretro.RetroArch` |
-| `peer_address` | | your buddy's IP or Tailscale name |
-| `connection_mode` | `direct` | `direct`, `tailscale`, `relay` |
-| `netplay_port` / `sync_port` | 55435 / 55440 | |
-| `buildbot_fallback` | `true` | fetch cores from libretro when OSes differ |
-| `core_map.<ext>` | see `config.py` | e.g. `config set core_map.sfc bsnes_libretro` |
-
-## Development
+## Building from source
 
 ```sh
-pip install -e '.[dev]'
-pytest
+npm install
+npm start          # run the app
+npm test           # tests
+npm run dist       # installer for the current OS, in dist/
 ```
+
+To publish installers for all three systems, push a version tag:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+GitHub Actions (`.github/workflows/build.yml`) builds Windows, macOS and Linux
+installers and attaches them to a GitHub Release. You can also run the
+workflow by hand from the Actions tab and download the installers from the
+run page.
+
+## How it works
+
+Each app runs a small file server on port 55440 (while *Share my library* is
+on) and polls your buddy's. Every request needs the shared secret. Files are
+only served by content hash from the app's own scan of your ROM and cores
+folders, so nothing else on your PC is reachable.
+
+| File | Role |
+|---|---|
+| `src/main/library.js` | Scans ROMs and cores (SHA-256 + CRC32, cached) |
+| `src/main/server.js` | Sync server: manifest, current session, file downloads |
+| `src/main/sync.js` | Guest side: matching, resumable downloads, buildbot fallback |
+| `src/main/launcher.js` | Builds the RetroArch `--host` / `--connect` command |
+| `src/main/controller.js` | App state: hosting, joining, buddy polling |
+| `src/renderer/` | The UI |
+
+Only share ROMs you own, and only between yourselves.
