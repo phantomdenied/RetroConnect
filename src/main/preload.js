@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('rc', {
   stopHosting: () => call('host:stop'),
   join: () => call('join'),
   sync: (shas) => call('sync', shas),
+  retroarchLatest: () => call('retroarch:latest'),
+  installRetroArch: () => call('retroarch:install'),
   pickFolder: (title, defaultPath) => call('dialog:folder', title, defaultPath),
   pickFile: (title) => call('dialog:file', title),
   openPath: (p) => call('open:path', p),

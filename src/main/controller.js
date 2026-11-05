@@ -11,7 +11,8 @@ const path = require('path');
 const config = require('./config');
 const platforms = require('./platforms');
 const launcher = require('./launcher');
-const { Library, retroarchVersion } = require('./library');
+const { Library, retroarchVersion, clearVersionCache } = require('./library');
+const raInstaller = require('./retroarch-installer');
 const { SyncServer } = require('./server');
 const { HostClient, Syncer, SyncError, compare } = require('./sync');
 
@@ -38,7 +39,10 @@ function localAddresses() {
 }
 
 class Controller extends EventEmitter {
-  constructor({ dataDir, version = '0', pollMs = POLL_MS, launch = launcher.run, fetchCore } = {}) {
+  constructor({
+    dataDir, version = '0', pollMs = POLL_MS, launch = launcher.run, fetchCore,
+    retroarchDir = path.join(dataDir, 'RetroArch'), installer = raInstaller,
+  } = {}) {
     super();
     this.dataDir = dataDir;
     this.configFile = path.join(dataDir, 'config.json');
@@ -59,6 +63,9 @@ class Controller extends EventEmitter {
     this.busy = null; // description of a running job
     this.pollTimer = null;
     this.raVersion = null;
+    this.retroarchDir = retroarchDir; // where "Install RetroArch" puts it
+    this.installer = installer;
+    this.raLatest = null; // { version, url, size } from libretro, once checked
   }
 
   // ----- lifecycle -----------------------------------------------------------
@@ -87,7 +94,9 @@ class Controller extends EventEmitter {
       nickname: this.cfg.nickname,
       retroarchCmd: ra,
     });
-    this.raVersion = await retroarchVersion(ra);
+    // A RetroArch we installed knows its version; otherwise ask the binary.
+    const managed = this.managedRetroArch();
+    this.raVersion = managed && ra[0] === managed.exe ? managed.version : await retroarchVersion(ra);
     this.buddyManifest = null;
     this.buddyManifestAt = 0;
     await this.restartServer();
@@ -124,7 +133,15 @@ class Controller extends EventEmitter {
       configured: config.isConfigured(cfg),
       config: cfg,
       platform: platforms.platformTag(),
-      retroarch: { command: config.retroarchCmd(cfg), version: this.raVersion },
+      retroarch: {
+        command: config.retroarchCmd(cfg),
+        version: this.raVersion,
+        canInstall: platforms.osName() === 'windows' || process.env.RETROCONNECT_ALLOW_RA_INSTALL === '1',
+        managed: this.managedRetroArch(),
+        latest: this.raLatest,
+        updateAvailable: Boolean(this.raLatest && (!this.raVersion
+          || raInstaller.compareVersions(this.raLatest.version, this.raVersion) > 0)),
+      },
       coresDir: config.coresPath(cfg),
       server: { running: Boolean(this.server), port: this.server ? this.server.port : null, error: this.serverError },
       addresses: localAddresses(),
@@ -230,6 +247,47 @@ class Controller extends EventEmitter {
       };
     });
     return { rows, cores: local.cores, buddyOnline: Boolean(this.buddyManifest), romsDir: this.cfg.romsDir };
+  }
+
+  // ----- RetroArch install ---------------------------------------------------
+
+  managedRetroArch() {
+    const version = this.installer.installedVersion(this.retroarchDir);
+    return version ? { version, dir: this.retroarchDir, exe: path.join(this.retroarchDir, 'retroarch.exe') } : null;
+  }
+
+  async checkRetroArchLatest() {
+    this.raLatest = await this.installer.latestStable();
+    this.emitState();
+    return this.raLatest;
+  }
+
+  async installRetroArch() {
+    if (this.hosting || this.playing) throw new Error('Close RetroArch (finish your game) before installing');
+    return this.withBusy('Installing RetroArch', async () => {
+      let result;
+      try {
+        result = await this.installer.install({
+          installDir: this.retroarchDir,
+          release: this.raLatest,
+          onProgress: (p) => this.progress(p),
+          log: (m) => this.log(m),
+        });
+      } catch (err) {
+        if (['EBUSY', 'EPERM'].includes(err.code)) {
+          throw new Error('RetroArch is running. Close it and try again.');
+        }
+        throw err;
+      }
+      clearVersionCache();
+      this.raLatest = this.raLatest || { version: result.version };
+      // Point RetroConnect at it. Unless a cores folder was chosen by hand,
+      // cores are then found next to retroarch.exe automatically.
+      this.cfg = config.save(this.configFile, { ...this.cfg, retroarchCommand: [result.exe] });
+      await this.applyConfig();
+      this.log(`RetroArch ${result.version} is ready. Get cores from RetroArch → Online Updater → Core Downloader.`);
+      return result;
+    });
   }
 
   // ----- actions -------------------------------------------------------------

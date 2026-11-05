@@ -67,12 +67,15 @@ function wireIpc() {
   handle('host:stop', () => controller.stopHosting());
   handle('join', () => controller.join());
   handle('sync', (shas) => controller.syncGames(shas || null));
+  handle('retroarch:latest', () => controller.checkRetroArchLatest());
+  handle('retroarch:install', () => controller.installRetroArch());
   handle('dialog:folder', async (title, defaultPath) => {
     const r = await dialog.showOpenDialog(win, { title, defaultPath, properties: ['openDirectory', 'createDirectory'] });
     return r.canceled ? null : r.filePaths[0];
   });
   handle('dialog:file', async (title) => {
-    const r = await dialog.showOpenDialog(win, { title, properties: ['openFile'] });
+    const filters = process.platform === 'win32' ? [{ name: 'Programs', extensions: ['exe'] }] : undefined;
+    const r = await dialog.showOpenDialog(win, { title, filters, properties: ['openFile'] });
     return r.canceled ? null : r.filePaths[0];
   });
   handle('open:path', (p) => shell.openPath(p));
@@ -108,9 +111,14 @@ function wireController() {
 }
 
 app.whenReady().then(async () => {
+  const dataDir = process.env.RETROCONNECT_HOME || app.getPath('userData');
   controller = new Controller({
-    dataDir: process.env.RETROCONNECT_HOME || app.getPath('userData'),
+    dataDir,
     version: app.getVersion(),
+    // Big, machine-specific files belong in Local AppData, not the roaming profile.
+    retroarchDir: process.env.LOCALAPPDATA && !process.env.RETROCONNECT_HOME
+      ? path.join(process.env.LOCALAPPDATA, 'RetroConnect', 'RetroArch')
+      : path.join(dataDir, 'RetroArch'),
   });
   wireIpc();
   wireController();

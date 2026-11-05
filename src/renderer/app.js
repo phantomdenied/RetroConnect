@@ -98,13 +98,14 @@ function addLog(entry) {
 }
 
 let progressHide = null;
-function showProgress({ label, done, total }) {
+function showProgress({ label, done, total, percent }) {
   const box = $('#progress');
   const pct = total ? Math.min(100, (100 * done) / total) : 100;
   box.hidden = false;
   box.querySelector('.progress-fill').style.width = `${pct}%`;
-  box.querySelector('.progress-label').textContent =
-    `${label.split('/').pop()} · ${pct.toFixed(0)}% of ${fmtBytes(total)}`;
+  box.querySelector('.progress-label').textContent = percent
+    ? `${label} · ${pct.toFixed(0)}%`
+    : `${label.split('/').pop()} · ${pct.toFixed(0)}% of ${fmtBytes(total)}`;
   clearTimeout(progressHide);
   if (done >= total) progressHide = setTimeout(() => { box.hidden = true; }, 1500);
 }
@@ -397,7 +398,8 @@ function renderSettings() {
               class: 'btn', type: 'button',
               onclick: async () => { const p = await act(() => rc.pickFile('Find RetroArch')); if (p) { d.retroarchCommand = [p]; renderSettings(); } },
             }, 'Browse…')),
-          h('div', { class: 'hint' }, S.retroarch.version ? `Found RetroArch ${S.retroarch.version}. Leave blank to auto-detect.` : 'Leave blank to auto-detect. On macOS pick RetroArch.app/Contents/MacOS/RetroArch.')),
+          h('div', { class: 'hint' }, S.retroarch.version ? `Using RetroArch ${S.retroarch.version}. Leave blank to auto-detect.` : 'Leave blank to auto-detect.'),
+          retroarchInstaller()),
         h('div', { class: 'field' }, h('label', {}, 'Cores folder'),
           h('div', { class: 'row' }, h('input', { type: 'text', value: d.coresDir, placeholder: `Auto: ${S.coresDir}`, oninput: bind('coresDir') }), browse('coresDir', "Choose RetroArch's cores folder")))),
       h('div', { class: 'card' },
@@ -440,6 +442,58 @@ function renderSettings() {
       h('button', { class: 'btn', onclick: () => { draft = null; renderSettings(); } }, 'Discard changes')));
 }
 
+// ----- RetroArch install button ---------------------------------------------
+
+let raCheck = null;
+function checkLatestRetroArch() {
+  if (!raCheck) {
+    raCheck = rc.retroarchLatest().catch((err) => {
+      raCheck = null;
+      addLog({ message: err.message, level: 'warn', at: Date.now() });
+    });
+  }
+  return raCheck;
+}
+
+function retroarchInstaller({ compact = false } = {}) {
+  const ra = S.retroarch;
+  if (!ra.canInstall) return null;
+  if (!ra.latest) {
+    checkLatestRetroArch();
+    return h('div', { class: 'ra-install muted small' }, 'Checking for the latest RetroArch…');
+  }
+  const installing = S.busy === 'Installing RetroArch';
+  const have = ra.command.length > 0;
+  const v = ra.latest.version;
+  let label = null;
+  if (!have) label = `Install RetroArch ${v}`;
+  else if (ra.updateAvailable) label = ra.managed ? `Update RetroArch to ${v}` : `Install RetroArch ${v}`;
+
+  if (!label && installing) {
+    return h('div', { class: 'ra-install' },
+      h('button', { class: 'btn', disabled: true }, 'Installing…'),
+      h('span', { class: 'muted small' }, 'Watch the progress bar at the bottom.'));
+  }
+  if (!label) {
+    return h('div', { class: 'ra-install' },
+      h('span', { class: 'ok-text' }, `✓ You have the latest RetroArch (${v})`),
+      compact ? null : h('button', {
+        class: 'link-btn small', disabled: Boolean(S.busy),
+        onclick: () => act(() => rc.installRetroArch(), { success: `RetroArch ${v} reinstalled` }),
+      }, 'Reinstall'));
+  }
+  const note = [];
+  if (ra.latest.size) note.push(`${fmtBytes(ra.latest.size)} download from libretro`);
+  if (have && !ra.managed) note.push(`you have ${ra.version || 'an unknown version'}; this installs a separate up-to-date copy`);
+  if (ra.managed) note.push('your settings, saves and cores are kept');
+  return h('div', { class: 'ra-install' },
+    h('button', {
+      class: `btn ${have ? 'cyan' : 'primary'}`, disabled: Boolean(S.busy),
+      onclick: () => act(() => rc.installRetroArch(), { success: (r) => `RetroArch ${r.version} installed` }),
+    }, installing ? 'Installing…' : label),
+    h('span', { class: 'muted small' }, installing ? 'Watch the progress bar at the bottom. This takes a minute or two.' : note.join(' · ')));
+}
+
 // ----- first-run wizard ------------------------------------------------------
 
 const wiz = { step: 0, data: null, role: null };
@@ -472,13 +526,16 @@ function renderWizard() {
       h('h1', {}, 'RetroArch'),
       found
         ? h('div', { class: 'callout info' }, `Found RetroArch${S.retroarch.version ? ' ' + S.retroarch.version : ''}: `, h('span', { class: 'mono' }, S.retroarch.command.join(' ')))
-        : h('div', { class: 'callout' }, "Couldn't find RetroArch automatically. Install it from retroarch.com, or point to it below."),
+        : h('div', { class: 'callout' }, S.retroarch.canInstall
+          ? "RetroArch isn't installed yet. Install it with one click, or point to an existing copy below."
+          : "Couldn't find RetroArch automatically. Install it from retroarch.com, or point to it below."),
+      retroarchInstaller({ compact: true }),
       h('div', { class: 'field', style: 'margin-top:14px' }, h('label', {}, found ? 'Use a different RetroArch (optional)' : 'RetroArch location'),
         h('div', { class: 'row' },
           h('input', { type: 'text', value: d.retroarchCommand.join(' '), oninput: (e) => { d.retroarchCommand = e.target.value.trim() ? [e.target.value.trim()] : []; } }),
           h('button', { class: 'btn', onclick: async () => { const p = await act(() => rc.pickFile('Find RetroArch')); if (p) { d.retroarchCommand = [p]; renderWizard(); } } }, 'Browse…'))),
       h('p', { class: 'muted small' }, `Cores folder: ${d.coresDir || S.coresDir} (change it later in Settings).`),
-      found ? null : h('button', { class: 'link-btn', onclick: () => act(() => rc.openUrl('https://www.retroarch.com/?page=platforms')) }, 'Download RetroArch'),
+      found || S.retroarch.canInstall ? null : h('button', { class: 'link-btn', onclick: () => act(() => rc.openUrl('https://www.retroarch.com/?page=platforms')) }, 'Download RetroArch'),
     ];
   } else {
     body = [
@@ -537,11 +594,21 @@ async function boot() {
   $('#activity-toggle').addEventListener('click', () => { const l = $('#log'); l.hidden = !l.hidden; });
 
   rc.onState((s) => {
+    const prev = S;
     S = s;
     // Reload the merged game list when the buddy comes online / goes away.
     const key = `${s.buddy.status}:${s.buddy.romCount || 0}:${s.config.romsDir}`;
     if (key !== lastBuddyKey) { lastBuddyKey = key; loadLibrary().catch(() => {}); }
-    if (view === 'settings' && draft) { renderBuddyCard(); renderBanner(); return; } // don't clobber edits
+    // Something changed RetroArch behind an open form (e.g. "Install RetroArch"):
+    // carry it into the drafts so saving them doesn't undo it.
+    if (prev && JSON.stringify(prev.config.retroarchCommand) !== JSON.stringify(s.config.retroarchCommand)) {
+      if (draft) draft.retroarchCommand = [...s.config.retroarchCommand];
+      if (wiz.data) wiz.data.retroarchCommand = [...s.config.retroarchCommand];
+    }
+    // Don't rebuild a form while someone is typing in it.
+    const typing = document.activeElement && document.activeElement.matches('input, select')
+      && document.activeElement.closest('#view-settings, #wizard');
+    if (typing) { renderBuddyCard(); renderBanner(); return; }
     render();
   });
   rc.onLog(addLog);

@@ -30,7 +30,7 @@ button, input, select { font: inherit; color: inherit; }
 
 .app {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 220px minmax(0, 1fr);
   grid-template-rows: 1fr auto;
   height: 100vh;
 }
@@ -73,7 +73,7 @@ button, input, select { font: inherit; color: inherit; }
 h2 { font-size: 15px; margin: 0 0 10px; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
-code, .mono { font-family: var(--mono); font-size: 12.5px; }
+code, .mono { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
 
 .btn {
   border: 1px solid var(--line); background: var(--panel-2); padding: 7px 14px; border-radius: 8px;
@@ -177,7 +177,7 @@ table.cores td:first-child { width: 70px; font-family: var(--mono); color: var(-
 .save-bar { position: sticky; bottom: -28px; background: var(--bg); padding: 14px 0; display: flex; gap: 10px; align-items: center; border-top: 1px solid var(--line); margin-top: 16px; }
 
 /* ----- activity ----- */
-.activity { grid-column: 2; border-top: 1px solid var(--line); background: var(--bg-2); }
+.activity { grid-column: 2; min-width: 0; border-top: 1px solid var(--line); background: var(--bg-2); }
 .activity-bar { display: flex; align-items: center; gap: 14px; padding: 8px 18px; min-height: 40px; }
 .activity-status { color: var(--muted); font-size: 12.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-status.warn { color: var(--warn); }
@@ -208,5 +208,8 @@ table.cores td:first-child { width: 70px; font-family: var(--mono); color: var(-
 .toast.error { border-left-color: var(--bad); }
 
 @media (max-width: 960px) {
-  .app { grid-template-columns: 180px 1fr; }
+  .app { grid-template-columns: 180px minmax(0, 1fr); }
 }
+
+.ra-install { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.ok-text { color: var(--ok); font-weight: 600; font-size: 13px; }

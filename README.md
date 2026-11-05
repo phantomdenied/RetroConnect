@@ -30,9 +30,22 @@ When you first open it, Windows Firewall asks whether RetroConnect may use the
 network. Click **Allow** (private networks is enough with Tailscale or a home
 network). RetroArch asks the same the first time you host.
 
-You also need [RetroArch](https://www.retroarch.com/?page=platforms) installed.
-RetroConnect looks in the usual places (`C:\RetroArch-Win64`, Steam, `%APPDATA%`);
-otherwise point to `retroarch.exe` in Settings.
+### RetroArch
+
+Don't have RetroArch? Click **Install RetroArch** in the setup wizard (or in
+Settings). RetroConnect downloads the latest stable Windows build from
+libretro (about 200 MB) and unpacks it into
+`%LOCALAPPDATA%\RetroConnect\RetroArch`. It needs no admin rights and is set up
+for you automatically. When a newer stable release comes out, the same button
+becomes **Update RetroArch**. Your settings, saves and cores are kept. If you
+both click it, you'll be on the same version, which netplay likes.
+
+A fresh RetroArch has no cores yet. Get them in RetroArch → *Online Updater →
+Core Downloader* (the guest gets the host's cores automatically when joining).
+
+Already have RetroArch? RetroConnect looks in the usual places
+(`C:\RetroArch-Win64`, Steam, `%APPDATA%`); otherwise point to `retroarch.exe`
+in Settings.
 
 ## First run
 
@@ -85,6 +98,7 @@ folders, so nothing else on your PC is reachable.
 | `src/main/server.js` | Sync server: manifest, current session, file downloads |
 | `src/main/sync.js` | Guest side: matching, resumable downloads |
 | `src/main/launcher.js` | Builds the RetroArch `--host` / `--connect` command |
+| `src/main/retroarch-installer.js` | Installs/updates RetroArch from libretro's stable builds |
 | `src/main/controller.js` | App state: hosting, joining, buddy polling |
 | `src/renderer/` | The UI |
 

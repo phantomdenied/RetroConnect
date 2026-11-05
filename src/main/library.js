@@ -217,4 +217,8 @@ class Library {
   }
 }
 
-module.exports = { Library, HashCache, hashFile, isContentFile, safeRelParts, retroarchVersion, MANIFEST_VERSION };
+function clearVersionCache() {
+  versionCache.clear();
+}
+
+module.exports = { Library, HashCache, hashFile, isContentFile, safeRelParts, retroarchVersion, clearVersionCache, MANIFEST_VERSION };
