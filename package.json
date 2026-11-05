@@ -12,10 +12,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.js",
-    "dist": "electron-builder",
-    "dist:linux": "electron-builder --linux",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac"
+    "dist": "electron-builder --win --x64"
   },
   "dependencies": {
     "fflate": "0.8.3"
@@ -39,35 +36,18 @@
       "target": [
         "nsis",
         "portable"
-      ]
+      ],
+      "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "artifactName": "${productName}-${version}-win-setup.${ext}"
     },
-    "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "category": "public.app-category.games"
-    },
-    "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
-      "category": "Game",
-      "maintainer": "phantomdenied",
-      "syncDesktopName": true
-    },
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "publish": null,
     "portable": {
       "artifactName": "${productName}-${version}-win-portable.${ext}"
     }
   },
-  "homepage": "https://github.com/phantomdenied/RetroConnect",
-  "desktopName": "retroconnect.desktop"
+  "homepage": "https://github.com/phantomdenied/RetroConnect"
 }
