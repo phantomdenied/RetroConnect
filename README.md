@@ -18,6 +18,10 @@ mismatched files. Then RetroArch launches and connects for both of you.
 - **🎲 Pick a game for us** chooses something you both have. **Suggest** sends
   it to your buddy, whose app shows "Sam wants to play …" with **Host it**
   (or **Get it** if they don't have it yet).
+- **<Friend>'s games** page: browse your friend's whole library and click
+  **Ask to play** (they get a pop-up with **Host it**) or **Get it**.
+- **Player 1 / Player 2**: choose who's Player 1 when you host (you or your
+  friend). See *Players and controllers* below.
 - **Open Discord**: save your group's Discord invite or channel link once
   (Connect page) and both of you get a button for it.
 - **RetroArch setup** page: one button installs RetroArch, the cores for the
@@ -56,11 +60,7 @@ Open the **RetroArch** page and press **Set it all up for me**. It:
 2. Installs a core (emulator) for each system you tick: NES, SNES, Genesis,
    Arcade, PC Engine, Game Boy, GBA and Atari are ticked by default. N64 isn't,
    because it's often laggy online.
-3. Sets up your controller. Press a button on it and the page shows its
-   name, its type (Xbox, PlayStation, Nintendo or generic) and lights up the
-   buttons you press. RetroConnect picks the RetroArch driver that recognizes
-   it (`xinput` for Xbox-style and generic pads, `sdl2` for PlayStation and
-   Nintendo) and turns on auto-configuration, so the buttons are mapped for you.
+3. Sets up your controller (see below).
 4. Applies netplay-friendly settings:
    - The game keeps running when RetroArch isn't the active window.
      Otherwise alt-tabbing to Discord freezes it for both of you.
@@ -69,6 +69,39 @@ Open the **RetroArch** page and press **Set it all up for me**. It:
    - RetroArch starts in fullscreen.
 
 **Test RetroArch** opens it so you can see the "controller configured" message.
+
+### Players and controllers
+
+**Your controller is read automatically.** RetroConnect watches for
+controllers whenever its window is open (press any button once) and remembers
+them. On every **Host** and **Join** it:
+
+- picks the RetroArch controller driver that suits what's plugged in: `sdl2`
+  for PlayStation/Nintendo pads, `xinput` when an Xbox-style pad is connected
+  (that driver also handles other pads through DirectInput);
+- checks RetroArch's controller profiles (its `autoconfig` folder) for each
+  controller by its vendor/product ID, or as "XInput Controller" for Xbox-style
+  pads. RetroArch ships hundreds, so this is usually a ✓;
+- writes a profile for a standard PlayStation/Nintendo-style controller
+  RetroArch doesn't know, using RetroArch's own standard layout;
+- explains the one-time mapping for an unknown no-name pad
+  (RetroArch → Settings → Input → Port 1 Controls → Set All Controls).
+
+The RetroArch page shows all of this per controller, with a live button test.
+
+**Who's Player 1 online?** RetroArch already sorts this out: whoever hosts is
+Player 1 and the person joining is Player 2, and each of you plays with your
+own controller whatever number you are. To flip it, use **When I host,
+Player 1 is: me / <friend>** on the Games page. RetroConnect asks RetroArch
+for the right slots on both sides (`netplay_request_device_pN`), and the join
+banner says "You'll be Player 1/2".
+
+**Several controllers on one PC?** Set **Local player** next to each
+controller on the RetroArch page. RetroConnect reserves that controller for
+that player in RetroArch (`input_playerN_reserved_device`), so the right pad
+is always Player 1 even if another one (or a virtual DS4Windows pad) connects
+first. Xbox-style pads can't be reserved this way, because Windows doesn't
+report which one is which; they take numbers in the order they connect.
 Your original `retroarch.cfg` is saved once as
 `retroarch.cfg.before-retroconnect`. Close RetroArch before applying settings,
 because RetroArch rewrites its config when it quits.

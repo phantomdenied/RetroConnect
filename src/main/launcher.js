@@ -12,11 +12,13 @@ function cfgLine(key, value) {
 }
 
 /** Settings passed via --appendconfig (they take priority over retroarch.cfg). */
-function netplayOverrides(cfg, role) {
+function netplayOverrides(cfg, role, extra = {}) {
   const useRelay = cfg.connectionMode === 'relay' && role === 'host';
   let out = cfgLine('netplay_nickname', cfg.nickname);
   out += cfgLine('netplay_use_mitm_server', useRelay ? 'true' : 'false');
   if (useRelay) out += cfgLine('netplay_mitm_server', cfg.relayServer);
+  // Controller driver, player reservations and netplay slot for this session.
+  for (const [k, v] of Object.entries(extra)) out += cfgLine(k, v);
   return out;
 }
 
@@ -43,11 +45,11 @@ function buildCommand(cfg, role, corePath, romPath, { connectTo = null, port = n
 /** Start RetroArch; resolves with its exit code once it closes. */
 function run(cfg, role, corePath, romPath, opts = {}, { onSpawn } = {}) {
   const tmp = path.join(os.tmpdir(), `retroconnect-${process.pid}-${Date.now()}.cfg`);
-  fs.writeFileSync(tmp, netplayOverrides(cfg, role));
+  fs.writeFileSync(tmp, netplayOverrides(cfg, role, opts.overrides || {}));
   const cleanup = () => fs.rm(tmp, { force: true }, () => {});
   let exe, args;
   try {
-    [exe, args] = buildCommand(cfg, role, corePath, romPath, { ...opts, overridesPath: tmp });
+    [exe, args] = buildCommand(cfg, role, corePath, romPath, { connectTo: opts.connectTo, port: opts.port, overridesPath: tmp });
   } catch (err) {
     cleanup();
     return Promise.reject(err);

@@ -81,12 +81,17 @@ class Controller extends EventEmitter {
     this.fetchImpl = fetchImpl;
     this.update = null; // result of the last update check
     this.suggestionSeq = 0;
+    this.padsFile = path.join(dataDir, 'controllers.json');
+    this.livePads = []; // controllers the window can see right now
+    this.padData = { known: [], assign: {} }; // last seen controllers + player assignments
+    this.ctrl = null; // driver + per-controller profile status
   }
 
   // ----- lifecycle -----------------------------------------------------------
 
   async init() {
     this.cfg = config.load(this.configFile);
+    try { this.padData = { known: [], assign: {}, ...JSON.parse(require('fs').readFileSync(this.padsFile, 'utf8')) }; } catch { /* first run */ }
     await this.applyConfig();
     this.startPolling();
     return this.state();
@@ -170,6 +175,7 @@ class Controller extends EventEmitter {
       updateFeed: this.updateFeed(),
       discord: this.discordLink(),
       mySuggestion: this.mySuggestion || null,
+      controllers: this.ctrl,
       tailscale: {
         ...this.ts,
         canInstall: platforms.osName() === 'windows' || process.env.RETROCONNECT_ALLOW_TS_INSTALL === '1',
@@ -292,6 +298,80 @@ class Controller extends EventEmitter {
     return { rows, cores: local.cores, buddyOnline: Boolean(this.buddyManifest), romsDir: this.cfg.romsDir };
   }
 
+  // ----- controllers ----------------------------------------------------------
+
+  /** The window reports the controllers it can see (browser Gamepad API). */
+  async reportPads(list) {
+    const pads = (Array.isArray(list) ? list : []).slice(0, 8)
+      .map((g) => ({ index: Number(g.index) || 0, ...raSetup.classifyController(String(g.id || ''), String(g.mapping || '')) }));
+    this.livePads = pads;
+    if (pads.length) {
+      // Remember them, so Host/Join still know your controller even if the
+      // window hasn't seen a button press since it opened.
+      this.padData.known = pads.map(({ index, ...p }) => p);
+      this.savePadData();
+    }
+    return this.refreshControllers();
+  }
+
+  savePadData() {
+    try {
+      require('fs').mkdirSync(this.dataDir, { recursive: true });
+      require('fs').writeFileSync(this.padsFile, JSON.stringify(this.padData, null, 2));
+    } catch (err) {
+      this.log(`Couldn't save controller info: ${err.message}`, 'warn');
+    }
+  }
+
+  currentPads() {
+    return this.livePads.length ? this.livePads : this.padData.known;
+  }
+
+  /** Work out the driver and check/create a RetroArch profile for each controller. */
+  async refreshControllers() {
+    const ra = config.retroarchCmd(this.cfg);
+    const pads = this.currentPads();
+    const driver = raSetup.chooseDriver(pads);
+    const cfgValues = await raSetup.readSettings(raSetup.configPath(ra));
+    const dir = raSetup.autoconfigDir(ra, cfgValues);
+    let report = [];
+    try {
+      report = await raSetup.ensureProfiles(pads, driver, dir, { write: ra.length > 0 });
+    } catch (err) {
+      this.log(`Couldn't check controller profiles: ${err.message}`, 'warn');
+      report = pads.map((p) => ({ ...p, profile: { status: 'unknown' } }));
+    }
+    for (const r of report) {
+      const before = this.ctrl && this.ctrl.pads.find((p) => p.key === r.key);
+      if (r.profile.status === 'created' && !(before && before.profile.status === 'created')) {
+        this.log(`Created a RetroArch controller profile for ${r.name}`);
+      }
+    }
+    this.ctrl = { live: this.livePads.length > 0, driver, autoconfigDir: dir, pads: report, assign: this.padData.assign };
+    this.emitState();
+    return this.ctrl;
+  }
+
+  /** Put a controller on a player number for local play (null = automatic). */
+  async assignPad(key, player) {
+    const assign = { ...this.padData.assign };
+    for (const k of Object.keys(assign)) if (assign[k] === player) delete assign[k];
+    if (player) assign[key] = player; else delete assign[key];
+    this.padData.assign = assign;
+    this.savePadData();
+    return this.refreshControllers();
+  }
+
+  /** Extra RetroArch settings for this launch: controller driver, players, netplay slot. */
+  async launchOverrides(netplaySlot) {
+    let report = this.ctrl;
+    try { report = await this.refreshControllers(); } catch { /* use what we have */ }
+    const out = { input_autodetect_enable: 'true', ...raSetup.netplaySlotSettings(netplaySlot) };
+    if (report && report.driver) out.input_joypad_driver = report.driver;
+    if (report && Object.keys(this.padData.assign).length) Object.assign(out, raSetup.reservationSettings(report.pads, this.padData.assign));
+    return out;
+  }
+
   // ----- suggestions & Discord ------------------------------------------------
 
   /** Tell your buddy "let's play this". Shows up as a banner in their app. */
@@ -379,7 +459,13 @@ class Controller extends EventEmitter {
 
   async applyRetroArchSettings(opts = {}) {
     this.assertRetroArchClosed();
-    const changes = raSetup.recommendedSettings(opts);
+    const report = await this.refreshControllers();
+    // The detected controllers decide the driver and player slots.
+    const changes = {
+      ...raSetup.recommendedSettings({ ...opts, controllerKind: null }),
+      ...(report.driver ? { input_joypad_driver: report.driver } : {}),
+      ...(Object.keys(this.padData.assign).length ? raSetup.reservationSettings(report.pads, this.padData.assign) : {}),
+    };
     const file = raSetup.configPath(config.retroarchCmd(this.cfg));
     const r = await raSetup.applySettings(file, changes);
     this.log(`Updated RetroArch settings (${Object.keys(changes).length} changes) in ${file}`);
@@ -610,6 +696,7 @@ class Controller extends EventEmitter {
       netplay_port: this.cfg.netplayPort,
       connection_mode: this.cfg.connectionMode,
       relay_server: this.cfg.relayServer,
+      host_player: this.cfg.hostPlayer, // which netplay player the host takes
       rom,
       core,
       started_at: Date.now(),
@@ -617,7 +704,8 @@ class Controller extends EventEmitter {
     this.log(`Hosting ${rom.path} with ${coreName}`);
     this.emitState();
 
-    const done = this.launch(this.cfg, 'host', this.library.corePath(core), this.library.romPath(rom), {},
+    const overrides = await this.launchOverrides(this.cfg.hostPlayer);
+    const done = this.launch(this.cfg, 'host', this.library.corePath(core), this.library.romPath(rom), { overrides },
       { onSpawn: (child) => { if (this.hosting) this.hosting.child = child; } });
     done.catch((err) => this.log(err.message, 'error')).finally(async () => {
       if (this.server) this.server.session = null;
@@ -658,8 +746,12 @@ class Controller extends EventEmitter {
       }
       this.playing = { rom: session.rom, core: session.core, host: session.host_nickname };
       this.emitState();
+      // The guest takes whichever player the host didn't (old hosts: no preference).
+      const hostPlayer = Number(session.host_player);
+      const slot = hostPlayer === 1 ? 2 : hostPlayer === 2 ? 1 : null;
+      const overrides = await this.launchOverrides(slot);
       this.launch(cfg, 'guest', result.corePath, result.romPath,
-        { connectTo: this.cfg.peerAddress, port: session.netplay_port })
+        { connectTo: this.cfg.peerAddress, port: session.netplay_port, overrides })
         .catch((err) => this.log(err.message, 'error'))
         .finally(() => { this.playing = null; this.emitState(); });
       return { warnings: result.warnings, downloaded: result.downloaded };

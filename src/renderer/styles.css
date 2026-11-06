@@ -247,3 +247,10 @@ table.cores td:first-child { width: 70px; font-family: var(--mono); color: var(-
 .systems { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 16px; margin-top: 10px; }
 .sys-row { align-items: center; margin-bottom: 6px; }
 .toggle.static { cursor: default; }
+
+.player-tag { display: inline-block; margin-left: 10px; font-size: 12px; font-weight: 700; color: var(--accent-2); background: rgba(94,231,255,.1); border: 1px solid rgba(94,231,255,.3); border-radius: 999px; padding: 1px 9px; vertical-align: 2px; }
+.p1-select { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; font-weight: 600; }
+.p1-select select, .pad-assign select { width: auto; padding: 5px 8px; }
+.pad-assign { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); font-weight: 600; }
+.pad .grow { flex: 1; }
+.warn-text { color: var(--warn); }

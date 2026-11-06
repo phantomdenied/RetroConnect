@@ -1,7 +1,7 @@
 {
   "name": "retroconnect",
   "productName": "RetroConnect",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Play RetroArch netplay with a friend: the host's exact core and ROM are synced to the guest automatically.",
   "main": "src/main/main.js",
   "author": {

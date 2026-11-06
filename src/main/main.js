@@ -77,6 +77,8 @@ function wireIpc() {
   handle('ra-setup:cores', (names) => controller.installCores(Array.isArray(names) ? names : []));
   handle('ra-setup:all', (opts) => controller.setUpEverything(opts || {}));
   handle('ra-setup:open', () => controller.openRetroArch());
+  handle('pads:report', (list) => controller.reportPads(list));
+  handle('pads:assign', (key, player) => controller.assignPad(String(key), player ? Number(player) : null));
   handle('ra-setup:classify', (ids) => (Array.isArray(ids) ? ids : []).map((id) => require('./retroarch-setup').classifyController(id)));
   handle('tailscale:refresh', () => controller.refreshTailscale());
   handle('tailscale:latest', () => controller.checkTailscaleLatest());

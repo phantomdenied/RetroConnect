@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('rc', {
   raSetupCores: (names) => call('ra-setup:cores', names),
   raSetupAll: (opts) => call('ra-setup:all', opts),
   raOpen: () => call('ra-setup:open'),
+  reportPads: (list) => call('pads:report', list),
+  assignPad: (key, player) => call('pads:assign', key, player),
   classifyPads: (ids) => call('ra-setup:classify', ids),
   onSuggestion: on('suggestion'),
   tsRefresh: () => call('tailscale:refresh'),
