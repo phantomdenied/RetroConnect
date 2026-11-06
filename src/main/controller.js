@@ -18,6 +18,8 @@ const updater = require('./updater');
 const raSetup = require('./retroarch-setup');
 const { fetchCoreFromBuildbot, HttpError } = require('./sync');
 const netcheck = require('./netcheck');
+const savesLib = require('./saves');
+const { backupExisting } = require('./sync');
 const { SyncServer } = require('./server');
 const { HostClient, Syncer, SyncError, compare } = require('./sync');
 
@@ -89,6 +91,7 @@ class Controller extends EventEmitter {
     this.connCheck = null; // last connection check result
     this.testListener = null; // short-lived listener on our netplay port
     this.compat = null; // "will joining this session work?" summary
+    this.rtt = []; // recent round-trip times to the buddy (ms), from polling
   }
 
   // ----- lifecycle -----------------------------------------------------------
@@ -146,6 +149,7 @@ class Controller extends EventEmitter {
       server.versions = { app: this.version, retroarch: this.raVersion };
       server.onNetplayProbe = () => this.openNetplayProbe();
       server.onProbeBack = (addr, port) => netcheck.tcpReachable(addr, port);
+      server.onSaveLookup = (sha) => this.lookupSave(sha);
       this.server = server;
     } catch (err) {
       this.serverError = err.code === 'EADDRINUSE'
@@ -185,6 +189,7 @@ class Controller extends EventEmitter {
       mySuggestion: this.mySuggestion || null,
       controllers: this.ctrl,
       connCheck: this.connCheck,
+      lag: this.lagInfo(),
       compat: this.compat,
       tailscale: {
         ...this.ts,
@@ -252,7 +257,10 @@ class Controller extends EventEmitter {
         this.buddyManifest = await client.manifest();
         this.buddyManifestAt = Date.now();
       }
+      const t0 = Date.now();
       const status = await client.status();
+      this.rtt.push(Date.now() - t0);
+      if (this.rtt.length > 10) this.rtt.shift();
       const session = status.session || null;
       // Only trust well-formed suggestions and real Discord links from the network.
       const sug = status.suggestion && status.suggestion.rom && typeof status.suggestion.rom.sha256 === 'string'
@@ -286,6 +294,7 @@ class Controller extends EventEmitter {
       }
     } catch (err) {
       this.buddyManifest = null;
+      this.rtt = [];
       this.setBuddy({ status: 'offline', error: err.message });
     }
   }
@@ -314,6 +323,94 @@ class Controller extends EventEmitter {
       };
     });
     return { rows, cores: local.cores, buddyOnline: Boolean(this.buddyManifest), romsDir: this.cfg.romsDir };
+  }
+
+  // ----- lag smoothing ----------------------------------------------------------
+
+  currentPing() {
+    if (this.rtt.length >= 3) {
+      const sorted = [...this.rtt].sort((a, b) => a - b);
+      return sorted[Math.floor(sorted.length / 2)];
+    }
+    return this.connCheck && this.connCheck.ping ? this.connCheck.ping.median : null;
+  }
+
+  /**
+   * Netplay input delay. RetroArch hides lag by rolling back; a frame or two of
+   * input delay (netplay_input_latency_frames_min) means fewer rollbacks and
+   * less stutter, at the cost of slightly later inputs. The range lets
+   * RetroArch add up to that many more frames when the connection gets worse.
+   */
+  lagInfo() {
+    const ping = this.currentPing();
+    const auto = this.cfg.lagFrames < 0;
+    let frames = auto ? Controller.recommendFrames(ping) : this.cfg.lagFrames;
+    const range = frames === null ? null : auto ? (frames > 0 ? 2 : 0) : 0;
+    return { auto, frames, range, ping };
+  }
+
+  static recommendFrames(pingMs) {
+    if (pingMs === null || pingMs === undefined) return null;
+    if (pingMs < 30) return 0;
+    if (pingMs < 70) return 1;
+    if (pingMs < 120) return 2;
+    if (pingMs < 180) return 3;
+    return 4;
+  }
+
+  // ----- shared saves -----------------------------------------------------------
+
+  saveContext() {
+    const ra = config.retroarchCmd(this.cfg);
+    return { ra, cfgFile: raSetup.configPath(ra) };
+  }
+
+  async saveRoot() {
+    const { ra, cfgFile } = this.saveContext();
+    return savesLib.savesRoot(ra, await raSetup.readSettings(cfgFile));
+  }
+
+  /** Buddy asks about our save for a game. */
+  async lookupSave(romSha) {
+    if (!this.cfg.shareSaves) return null;
+    const rom = await this.library.findRomBySha(romSha);
+    if (!rom) return null;
+    const save = await savesLib.findSave(this.library.romPath(rom), await this.saveRoot());
+    return save ? { path: save.path, info: await savesLib.describe(save) } : null;
+  }
+
+  /** Before hosting: if the buddy has a newer save for this game, use theirs (ours is backed up). */
+  async pullNewerSave(rom) {
+    if (!this.cfg.shareSaves || this.buddy.status !== 'online') return null;
+    const client = this.client();
+    let theirs;
+    try {
+      theirs = await client.getJson(`/api/save/${rom.sha256}`);
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 404) return null; // no save, or an older app
+      throw err;
+    }
+    const romFull = this.library.romPath(rom);
+    const root = await this.saveRoot();
+    const mineRaw = await savesLib.findSave(romFull, root);
+    const mine = await savesLib.describe(mineRaw);
+    if (!savesLib.theirsIsNewer(mine, theirs)) return null;
+    const dest = mineRaw ? mineRaw.path : savesLib.targetPath(romFull, root, theirs.rel);
+    const part = `${dest}.part`;
+    await require('fs').promises.mkdir(path.dirname(dest), { recursive: true });
+    const res = await client.open(`/files/save/${rom.sha256}`);
+    const chunks = [];
+    for await (const c of res) chunks.push(c);
+    const data = Buffer.concat(chunks);
+    if (require('crypto').createHash('sha256').update(data).digest('hex') !== theirs.sha256) {
+      throw new Error('Their save arrived corrupted; keeping yours');
+    }
+    await require('fs').promises.writeFile(part, data);
+    const backup = await backupExisting(dest);
+    await require('fs').promises.rename(part, dest);
+    const who = this.buddy.nickname || 'your buddy';
+    this.log(`Using ${who}'s newer save for ${rom.path} (saved ${savesLib.ageText(theirs.age_ms)})${backup ? `; yours was kept as ${path.basename(backup)}` : ''}`);
+    return { dest, backup };
   }
 
   // ----- connection check & compatibility -------------------------------------
@@ -477,6 +574,11 @@ class Controller extends EventEmitter {
     let report = this.ctrl;
     try { report = await this.refreshControllers(); } catch { /* use what we have */ }
     const out = { input_autodetect_enable: 'true', ...raSetup.netplaySlotSettings(netplaySlot) };
+    const lag = this.lagInfo();
+    if (lag.frames !== null) {
+      out.netplay_input_latency_frames_min = String(lag.frames);
+      out.netplay_input_latency_frames_range = String(lag.range);
+    }
     if (report && report.driver) out.input_joypad_driver = report.driver;
     if (report && Object.keys(this.padData.assign).length) Object.assign(out, raSetup.reservationSettings(report.pads, this.padData.assign));
     return out;
@@ -819,6 +921,11 @@ class Controller extends EventEmitter {
     this.log(`Hosting ${rom.path} with ${coreName}`);
     this.emitState();
 
+    try {
+      await this.pullNewerSave(rom);
+    } catch (err) {
+      this.log(`Couldn't check your buddy's save: ${err.message}`, 'warn');
+    }
     const overrides = await this.launchOverrides(this.cfg.hostPlayer);
     const done = this.launch(this.cfg, 'host', this.library.corePath(core), this.library.romPath(rom), { overrides },
       { onSpawn: (child) => { if (this.hosting) this.hosting.child = child; } });

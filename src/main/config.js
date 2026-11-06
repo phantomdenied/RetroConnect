@@ -39,6 +39,8 @@ function defaults() {
     coreMap: { ...DEFAULT_CORE_MAP },
     buildbotFallback: true,
     hostPlayer: 1, // when you host: 1 = you're Player 1, 2 = your buddy is
+    lagFrames: -1, // netplay input delay frames: -1 = automatic from ping, 0 = off
+    shareSaves: true, // pull your buddy's newer battery save before hosting
     discordUrl: '', // invite or channel link for the Discord you both hang out in
     updateFeedUrl: '', // public JSON announcing new versions (overrides the built-in one)
   };
@@ -73,6 +75,7 @@ function validate(cfg) {
   }
   if (cfg.netplayPort === cfg.syncPort) throw new Error('Netplay and sync ports must differ');
   if (![1, 2].includes(cfg.hostPlayer)) throw new Error('hostPlayer must be 1 or 2');
+  if (!Number.isInteger(cfg.lagFrames) || cfg.lagFrames < -1 || cfg.lagFrames > 8) throw new Error('Lag smoothing must be Auto or 0-8 frames');
   if (typeof cfg.nickname !== 'string' || !cfg.nickname.trim()) throw new Error('Nickname is required');
   if (!Array.isArray(cfg.retroarchCommand)) throw new Error('retroarchCommand must be a list');
   if (cfg.discordUrl && !isDiscordUrl(cfg.discordUrl)) {
@@ -91,7 +94,7 @@ function normalize(raw = {}) {
   if (typeof cfg.retroarchCommand === 'string') {
     cfg.retroarchCommand = cfg.retroarchCommand ? [cfg.retroarchCommand] : [];
   }
-  for (const k of ['netplayPort', 'syncPort', 'hostPlayer']) cfg[k] = Number(cfg[k]);
+  for (const k of ['netplayPort', 'syncPort', 'hostPlayer', 'lagFrames']) cfg[k] = Number(cfg[k]);
   cfg.nickname = String(cfg.nickname).trim();
   cfg.peerAddress = String(cfg.peerAddress || '').trim();
   cfg.sharedSecret = String(cfg.sharedSecret || '').trim();

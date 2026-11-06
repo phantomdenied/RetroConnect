@@ -586,6 +586,7 @@ function connectionCheckCard() {
           line(r.fromBuddy.reachable, `${who} can join your games`, r.fromBuddy.reachable ? null : `${r.fromBuddy.error}. ${fixHint('from')}`),
           h('div', { class: 'muted small' }, 'RetroArch itself asks Windows Firewall for permission the first time it hosts. Click Allow.'),
         ],
+      h('div', { class: 'muted small' }, `Lag smoothing: ${lagText(S.lag)}`),
       h('div', { class: 'muted small' }, `Checked ${new Date(r.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`));
   }
   return h('div', { class: 'card', style: 'margin-top:16px' },
@@ -657,6 +658,10 @@ function renderSettings() {
             h('input', { type: 'number', value: d.netplayPort, oninput: bind('netplayPort', Number) })),
           h('div', { class: 'field', style: 'flex:1' }, h('label', {}, 'Sync port'),
             h('input', { type: 'number', value: d.syncPort, oninput: bind('syncPort', Number) }))),
+        lagField(d),
+        h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: d.shareSaves, onchange: bind('shareSaves') }),
+          h('div', {}, h('div', {}, h('b', {}, 'Share game saves')),
+            h('div', { class: 'muted small' }, `When you host, RetroConnect grabs ${buddyName()}'s save for that game if it's newer, so co-op progress carries over. Yours is kept as a backup.`))),
         h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: d.shareLibrary, onchange: bind('shareLibrary') }),
           h('div', {}, h('div', {}, h('b', {}, 'Share my library while the app is open')),
             h('div', { class: 'muted small' }, 'Lets your buddy see your games and download them. When off, sharing only happens while you host.'))),
@@ -684,6 +689,21 @@ function renderSettings() {
         }, { success: 'Settings saved' }),
       }, 'Save settings'),
       h('button', { class: 'btn', onclick: () => { draft = null; renderSettings(); } }, 'Discard changes')));
+}
+
+function lagText(lag) {
+  if (!lag || lag.frames === null) return 'Connect to your buddy and it adjusts automatically.';
+  const f = lag.frames === 0 ? 'no delay' : `${lag.frames} frame${lag.frames === 1 ? '' : 's'} of delay`;
+  return lag.auto ? `Right now: ${f}${lag.ping !== null ? ` (ping ${lag.ping} ms)` : ''}.` : `Fixed: ${f}.`;
+}
+
+function lagField(d) {
+  return h('div', { class: 'field' }, h('label', {}, 'Lag smoothing'),
+    h('select', { onchange: (e) => { d.lagFrames = Number(e.target.value); } },
+      h('option', { value: '-1', selected: d.lagFrames === -1 }, 'Automatic (recommended)'),
+      h('option', { value: '0', selected: d.lagFrames === 0 }, 'Off'),
+      [1, 2, 3, 4, 5, 6].map((n) => h('option', { value: String(n), selected: d.lagFrames === n }, `${n} frame${n === 1 ? '' : 's'}`))),
+    h('div', { class: 'hint' }, 'Adds a tiny input delay so online games stutter less. Automatic picks it from your ping. ', lagText(S.lag)));
 }
 
 function updatesCard(d) {

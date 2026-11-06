@@ -8,6 +8,8 @@
 //   GET /api/status            { session, suggestion, discord_url, versions } in one poll
 //   GET /api/netplay-probe     open a short-lived listener on our netplay port
 //   GET /api/probe-back?port=N try to reach the caller's netplay port
+//   GET /api/save/<rom sha256> info about our battery save for that game
+//   GET /files/save/<rom sha256> the save itself
 //   GET /files/rom/<sha256>    a ROM, by content hash
 //   GET /files/core/<sha256>   a core, by content hash
 //
@@ -19,6 +21,8 @@ const fs = require('fs');
 const http = require('http');
 
 const FILE_ROUTE = /^\/files\/(rom|core)\/([0-9a-f]{64})$/;
+const SAVE_INFO_ROUTE = /^\/api\/save\/([0-9a-f]{64})$/;
+const SAVE_FILE_ROUTE = /^\/files\/save\/([0-9a-f]{64})$/;
 const RANGE = /^bytes=(\d+)-$/;
 
 class SyncServer {
@@ -36,6 +40,7 @@ class SyncServer {
     // Hooks the controller supplies for the connection check.
     this.onNetplayProbe = null; // () => Promise<{ listening, port, error? }>
     this.onProbeBack = null; // (address, port) => Promise<{ reachable, error? }>
+    this.onSaveLookup = null; // (romSha) => Promise<{ path, info } | null>
     this.index = null; // Map "kind:sha" -> absolute path
     this.server = http.createServer((req, res) => {
       this.handle(req, res).catch((err) => {
@@ -125,6 +130,13 @@ class SyncServer {
     }
     const m = FILE_ROUTE.exec(url);
     if (m) return this.sendFile(req, res, m[1], m[2]);
+    const si = SAVE_INFO_ROUTE.exec(url) || SAVE_FILE_ROUTE.exec(url);
+    if (si && this.onSaveLookup) {
+      const found = await this.onSaveLookup(si[1]);
+      if (!found) return this.json(res, 404, { error: 'no save for that game' });
+      if (url.startsWith('/api/')) return this.json(res, 200, found.info);
+      return this.streamFile(req, res, found.path);
+    }
     return this.json(res, 404, { error: 'not found' });
   }
 
@@ -135,6 +147,10 @@ class SyncServer {
       await this.manifest(); // maybe added since the last scan
       file = this.index.get(`${kind}:${sha}`);
     }
+    return this.streamFile(req, res, file, kind);
+  }
+
+  async streamFile(req, res, file, kind = 'file') {
     let st;
     try { st = file && (await fs.promises.stat(file)); } catch { st = null; }
     if (!st || !st.isFile()) return this.json(res, 404, { error: `that ${kind} isn't here` });
