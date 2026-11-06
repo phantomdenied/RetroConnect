@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('rc', {
   raSetupInfo: () => call('ra-setup:info'),
   raSetupApply: (opts) => call('ra-setup:apply', opts),
   raSetupCores: (names) => call('ra-setup:cores', names),
+  updateCores: () => call('cores:update'),
   raSetupAll: (opts) => call('ra-setup:all', opts),
   raOpen: () => call('ra-setup:open'),
   reportPads: (list) => call('pads:report', list),

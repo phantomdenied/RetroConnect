@@ -92,6 +92,7 @@ function wireIpc() {
   handle('invite:redeem', (code, extra) => controller.redeemInvite(String(code || ''), extra || {}));
   handle('ra-setup:info', () => controller.retroarchSetupInfo());
   handle('ra-setup:apply', (opts) => controller.applyRetroArchSettings(opts || {}));
+  handle('cores:update', () => controller.updateCores());
   handle('ra-setup:cores', (names) => controller.installCores(Array.isArray(names) ? names : []));
   handle('ra-setup:all', (opts) => controller.setUpEverything(opts || {}));
   handle('ra-setup:open', () => controller.openRetroArch());

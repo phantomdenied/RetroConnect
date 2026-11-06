@@ -269,3 +269,29 @@ test('a buddy sending junk can\'t inject a bad Discord link or suggestion', asyn
   assert.equal(c.buddy.suggestion, null);
   assert.equal(c.state().discord, null);
 });
+
+test('controller: update cores re-downloads every installed core and reports which changed', async (t) => {
+  const dir = tmpdir();
+  const coresDir = path.join(dir, 'RA', 'cores');
+  write(path.join(coresDir, platforms.coreFilename('snes9x_libretro')), 'old snes');
+  write(path.join(coresDir, platforms.coreFilename('fceumm_libretro')), 'nes latest');
+  const calls = [];
+  const fetchCore = async (name, dest, _log, opts) => {
+    calls.push([name, opts && opts.onlyIfChanged]);
+    if (name === 'snes9x_libretro') write(path.join(dest, platforms.coreFilename(name)), 'new snes');
+    return path.join(dest, platforms.coreFilename(name));
+  };
+  const c = new Controller({ dataDir: path.join(dir, 'data'), fetchCore, pollMs: 60000 });
+  await c.init();
+  t.after(() => c.dispose());
+  await c.saveSettings({ coresDir });
+
+  const r = await c.updateCores();
+  assert.deepEqual(calls.map((x) => x[0]).sort(), ['fceumm_libretro', 'snes9x_libretro']);
+  assert.ok(calls.every((x) => x[1] === true));
+  assert.deepEqual(r, { checked: 2, updated: ['snes9x_libretro'] });
+  assert.equal(c.state().busy, null);
+
+  c.playing = true;
+  await assert.rejects(c.updateCores(), /Close RetroArch/);
+});

@@ -1034,6 +1034,39 @@ class Controller extends EventEmitter {
     return { installed: todo.length - failed.length };
   }
 
+  /**
+   * Re-download every installed core from the libretro buildbot (the same
+   * place RetroArch's Online Updater gets them). Cores that are already the
+   * latest build are left untouched; replaced ones are kept as .old.
+   */
+  async updateCores() {
+    this.assertRetroArchClosed();
+    return this.withBusy('Updating cores', async () => {
+      const fetchCore = this.fetchCore || fetchCoreFromBuildbot;
+      const before = await this.library.scanCores();
+      if (!before.length) throw new Error('No cores installed yet. Use RetroArch → "Set it all up for me" first.');
+      const failed = [];
+      for (let i = 0; i < before.length; i++) {
+        this.progress({ label: `Updating cores (${i + 1} of ${before.length})`, done: i, total: before.length, percent: false, count: true });
+        try {
+          await fetchCore(before[i].name, this.library.coresDir, (m) => this.log(m), { onlyIfChanged: true });
+        } catch (err) {
+          failed.push(before[i].name);
+          this.log(`${before[i].name}: ${err.message}`, 'warn');
+        }
+      }
+      this.progress({ label: 'Updating cores', done: before.length, total: before.length, count: true });
+      const after = new Map((await this.library.scanCores()).map((c) => [c.name, c.sha256]));
+      const updated = before.filter((c) => after.has(c.name) && after.get(c.name) !== c.sha256).map((c) => c.name);
+      this.log(updated.length
+        ? `Updated ${updated.length} core(s): ${updated.map((n) => n.replace(/_libretro$/, '')).join(', ')}`
+        : 'All your cores were already the latest');
+      this.emitState();
+      if (failed.length) throw new Error(`Couldn't update: ${failed.join(', ')}. Check your internet and try again.`);
+      return { checked: before.length, updated };
+    });
+  }
+
   /** The big button: RetroArch (if missing) + cores + settings. */
   async setUpEverything({ cores = [], settings = {} } = {}) {
     this.assertRetroArchClosed();

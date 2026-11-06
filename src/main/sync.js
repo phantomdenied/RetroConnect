@@ -178,7 +178,7 @@ async function downloadFromHost(client, kind, sha256, size, dest, label, onProgr
   return backup;
 }
 
-async function fetchCoreFromBuildbot(coreName, coresDir, log, { fetchImpl = globalThis.fetch, tag } = {}) {
+async function fetchCoreFromBuildbot(coreName, coresDir, log, { fetchImpl = globalThis.fetch, tag, onlyIfChanged = false } = {}) {
   const url = platforms.buildbotCoreUrl(coreName, tag);
   if (!url) {
     throw new SyncError(`No libretro download for ${platforms.platformTag()}; install ${coreName} with RetroArch's Online Updater`);
@@ -203,6 +203,11 @@ async function fetchCoreFromBuildbot(coreName, coresDir, log, { fetchImpl = glob
   if (!payload) throw new SyncError(`The buildbot archive didn't contain ${fname}`);
   await fsp.mkdir(coresDir, { recursive: true });
   const dest = path.join(coresDir, fname);
+  if (onlyIfChanged) {
+    // Already the latest: leave the file (and its timestamp) alone, no backup.
+    const current = await fsp.readFile(dest).catch(() => null);
+    if (current && Buffer.compare(current, Buffer.from(payload)) === 0) return dest;
+  }
   await fsp.writeFile(`${dest}.part`, payload);
   await backupExisting(dest);
   await fsp.rename(`${dest}.part`, dest);

@@ -945,6 +945,15 @@ function renderSettings() {
     h('div', { class: 'card', style: 'margin-top:16px' },
       h('h2', {}, 'Cores'),
       h('p', { class: 'muted small', style: 'margin-top:0' }, 'Which core runs each file type. Both players should use the same one. Installed cores are listed in green.'),
+      h('div', { class: 'row', style: 'flex-wrap:wrap;margin-bottom:12px' },
+        h('button', {
+          class: 'btn small',
+          disabled: Boolean(S.busy) || Boolean(S.hosting) || Boolean(S.playing),
+          onclick: () => act(() => rc.updateCores(), {
+            success: (r) => (r.updated.length ? `Updated ${r.updated.length} of ${r.checked} cores` : `All ${r.checked} cores are already the latest`),
+          }),
+        }, S.busy === 'Updating cores' ? 'Updating cores…' : 'Update cores to latest'),
+        h('span', { class: 'muted small' }, `Downloads the newest build of every installed core from libretro (like RetroArch's Online Updater). Old copies are kept as .old. When ${buddyName()} joins your games, they get your copy automatically.`)),
       h('table', { class: 'cores' }, h('tbody', {}, coreRows.map(([ext, core]) => h('tr', {},
         h('td', {}, `.${ext}`),
         h('td', {}, h('input', {

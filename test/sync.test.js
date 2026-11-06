@@ -311,3 +311,24 @@ test('two controllers: buddy sees the invite, joins, and gets matching files', a
   await waitFor(() => bob.buddy.status === 'online' && !bob.buddy.session, 'bob to see session end');
   releases.forEach((r) => r());
 });
+
+test('buildbot: onlyIfChanged leaves an identical core alone, replaces a different one', async () => {
+  const { zipSync } = require('fflate');
+  const { fetchCoreFromBuildbot } = require('../src/main/sync');
+  const dir = tmpdir();
+  const fname = platforms.coreFilename('snes9x_libretro', 'linux');
+  let bytes = 'v2 core';
+  const fetchImpl = async () => {
+    const zip = zipSync({ [fname]: new Uint8Array(Buffer.from(bytes)) });
+    return { ok: true, arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.length) };
+  };
+  const opts = { fetchImpl, tag: 'linux-x86_64', onlyIfChanged: true };
+  write(path.join(dir, fname), 'v2 core');
+  await fetchCoreFromBuildbot('snes9x_libretro', dir, quiet, opts);
+  assert.deepEqual(fs.readdirSync(dir), [fname]); // same bytes: no backup made
+
+  bytes = 'v3 core';
+  await fetchCoreFromBuildbot('snes9x_libretro', dir, quiet, opts);
+  assert.equal(fs.readFileSync(path.join(dir, fname), 'utf8'), 'v3 core');
+  assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith('.old')).length, 1);
+});
