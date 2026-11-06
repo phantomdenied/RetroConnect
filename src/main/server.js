@@ -76,7 +76,10 @@ class SyncServer {
   async manifest() {
     const m = await this.library.manifest();
     const index = new Map();
-    for (const r of m.roms) index.set(`rom:${r.sha256}`, this.library.romPath(r));
+    for (const r of m.roms) {
+      index.set(`rom:${r.sha256}`, this.library.romPath(r));
+      for (const p of r.parts || []) index.set(`rom:${p.sha256}`, this.library.romPath(p));
+    }
     for (const c of m.cores) index.set(`core:${c.sha256}`, this.library.corePath(c));
     this.index = index;
     return m;

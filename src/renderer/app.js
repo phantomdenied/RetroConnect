@@ -998,6 +998,16 @@ let raInfo = null;
 let raInfoLoading = false;
 const raOpts = { fullscreen: true, stickAsDpad: true, startSelectMenu: true };
 let raCores = null; // Set of selected core names
+
+/** "Sega CD BIOS: ✓ bios_CD_U.bin" / "missing: put … in …". */
+function biosLine(b) {
+  if (!b) return null;
+  if (b.ok) return h('div', { class: 'muted small' }, `${b.system} BIOS: `, h('span', { class: 'ok-text' }, `✓ ${b.found.join(', ')}`));
+  const open = h('button', { class: 'link-btn small', onclick: () => act(() => rc.openPath(b.dir)) }, 'open the folder');
+  return b.required
+    ? h('div', { class: 'small', style: 'color:var(--warn)' }, `${b.system} games need a BIOS file: ${b.files.slice(0, 3).join(' or ')}. Put it in RetroArch's system folder (`, open, ').')
+    : h('div', { class: 'muted small' }, `${b.system} BIOS: none (optional; the built-in one runs most games). Best: ${b.files[0]} in the system folder (`, open, ').');
+}
 let padLoop = null;
 let padKey = null;
 
@@ -1120,7 +1130,8 @@ function renderRetroArch() {
           onchange: (e) => { if (e.target.checked) raCores.add(x.core); else raCores.delete(x.core); },
         }),
         h('div', { class: 'grow' }, h('b', {}, x.label),
-          x.netplay === 'poor' ? h('span', { class: 'muted small' }, ' · often laggy online') : null),
+          x.netplay === 'poor' ? h('span', { class: 'muted small' }, ' · often laggy online') : null,
+          biosLine(x.bios)),
         x.installed ? h('span', { class: 'ok-text' }, '✓ Installed') : null))),
       h('button', {
         class: 'btn', disabled: busy || !haveRA, style: 'margin-top:10px',

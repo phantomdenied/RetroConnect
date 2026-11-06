@@ -144,6 +144,64 @@ async function walk(dir, rel = '') {
   return out;
 }
 
+// ----- multi-file discs ----------------------------------------------------------
+//
+// A disc image can be several files: "Game.cue" + "Game (Track 1).bin" ...,
+// and a multi-disc set is an .m3u listing each disc. The .cue / .m3u is what
+// RetroArch opens, so it is the game; the files it names become its "parts"
+// and are not listed as games of their own. Syncing a game copies its parts.
+
+const DISC_LIST = /\.(cue|m3u)$/i;
+
+/** File names a .cue (FILE "x.bin" BINARY) or .m3u (one per line) refers to. */
+function discRefs(text, ext) {
+  const refs = [];
+  if (ext === '.cue') {
+    for (const m of text.matchAll(/^\s*FILE\s+(?:"([^"]+)"|(\S+))/gim)) refs.push(m[1] || m[2]);
+  } else {
+    for (const line of text.split(/\r?\n/)) {
+      const t = line.trim();
+      if (t && !t.startsWith('#')) refs.push(t);
+    }
+  }
+  return refs;
+}
+
+/**
+ * Attach the files each .cue/.m3u names (that exist next to it) as `parts`,
+ * and drop those files from the list. .m3u entries take their discs' parts too.
+ */
+async function groupDiscs(roms, romsDir) {
+  const byPath = new Map(roms.map((r) => [r.path.toLowerCase(), r]));
+  const hidden = new Set();
+  const lists = roms.filter((r) => DISC_LIST.test(r.path))
+    .sort((a, b) => (a.path.toLowerCase().endsWith('.m3u') ? 1 : 0) - (b.path.toLowerCase().endsWith('.m3u') ? 1 : 0)); // cues first
+  for (const list of lists) {
+    if (list.size > 1024 * 1024) continue; // not a real cue/m3u
+    let text;
+    try { text = await fsp.readFile(path.join(romsDir, ...list.path.split('/')), 'utf8'); } catch { continue; }
+    const dir = path.posix.dirname(list.path);
+    const parts = [];
+    for (const ref of discRefs(text, path.extname(list.path).toLowerCase())) {
+      const ref2 = ref.replace(/\\/g, '/');
+      const rel = path.posix.normalize(dir === '.' ? ref2 : `${dir}/${ref2}`);
+      const part = byPath.get(rel.toLowerCase());
+      if (!part || part === list || rel.startsWith('..')) continue;
+      if (!parts.some((p) => p.path === part.path)) parts.push({ path: part.path, size: part.size, sha256: part.sha256 });
+      for (const sub of part.parts || []) if (!parts.some((p) => p.path === sub.path)) parts.push(sub);
+      hidden.add(part.path);
+    }
+    if (parts.length) {
+      list.parts = parts;
+      list.totalSize = list.size + parts.reduce((n, p) => n + p.size, 0);
+      // Game databases know the data track, not the tiny .cue.
+      const first = byPath.get(parts[0].path.toLowerCase());
+      if (first && first.crc32 && !list.path.toLowerCase().endsWith('.m3u')) list.crc32 = first.crc32;
+    }
+  }
+  return roms.filter((r) => !hidden.has(r.path));
+}
+
 class Library {
   constructor({ romsDir, coresDir, cacheFile = null, nickname = '', retroarchCmd = [], platformTag = null }) {
     this.romsDir = romsDir;
@@ -164,7 +222,7 @@ class Library {
       roms.push({ path: rel, size: st.size, ...(await this.cache.get(full, st)) });
     }
     await this.cache.save();
-    return roms;
+    return groupDiscs(roms, this.romsDir);
   }
 
   async scanCores() {
@@ -204,6 +262,16 @@ class Library {
     return path.join(this.romsDir, ...safeRelParts(entry.path));
   }
 
+  /** SHA-256 of a file under the ROM folder (cached), or null if it isn't there. */
+  async fileSha(rel) {
+    const full = path.join(this.romsDir, ...safeRelParts(rel));
+    let st;
+    try { st = await fsp.stat(full); } catch { return null; }
+    const { sha256 } = await this.cache.get(full, st);
+    await this.cache.save();
+    return sha256;
+  }
+
   corePath(entry) {
     return path.join(this.coresDir, path.basename(entry.file));
   }
@@ -221,4 +289,4 @@ function clearVersionCache() {
   versionCache.clear();
 }
 
-module.exports = { Library, HashCache, hashFile, isContentFile, safeRelParts, retroarchVersion, clearVersionCache, MANIFEST_VERSION };
+module.exports = { Library, groupDiscs, discRefs, HashCache, hashFile, isContentFile, safeRelParts, retroarchVersion, clearVersionCache, MANIFEST_VERSION };

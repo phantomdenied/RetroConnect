@@ -982,7 +982,12 @@ class Controller extends EventEmitter {
       configExists: Object.keys(current).length > 0,
       current: Object.fromEntries(Object.keys(raSetup.recommendedSettings({ controllerKind: 'xbox' }))
         .map((k) => [k, current[k] ?? null])),
-      systems: raSetup.SYSTEMS.map((s) => ({ ...s, installed: installed.has(s.core) })),
+      systemDir: raSetup.systemDir(file, current),
+      systems: await Promise.all(raSetup.SYSTEMS.map(async (s) => ({
+        ...s,
+        installed: installed.has(s.core),
+        bios: s.bios ? await raSetup.biosStatus(raSetup.systemDir(file, current), s.bios) : null,
+      }))),
     };
   }
 

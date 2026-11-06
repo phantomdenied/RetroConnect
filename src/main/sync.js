@@ -222,7 +222,11 @@ class Syncer {
   async ensureRom(remote, result, localBySha = null) {
     if (!localBySha) localBySha = new Map((await this.library.scanRoms()).map((r) => [r.sha256, r]));
     const local = localBySha.get(remote.sha256);
-    if (local) return this.library.romPath(local);
+    if (local) {
+      // Same .cue, but its tracks may be missing or different here.
+      if (remote.parts && remote.parts.length) await this.ensureParts(remote, result, path.posix.dirname(local.path), path.posix.dirname(remote.path));
+      return this.library.romPath(local);
+    }
     const dest = path.join(this.library.romsDir, ...safeRelParts(remote.path));
     const why = (await exists(dest)) ? 'is a different version' : 'is missing';
     this.log(`${remote.path} ${why}, downloading from your buddy`);
@@ -230,7 +234,29 @@ class Syncer {
     if (backup) result.warnings.push(`Your old copy was kept as ${path.basename(backup)}`);
     result.downloaded.push(remote.path);
     localBySha.set(remote.sha256, { ...remote });
+    if (remote.parts && remote.parts.length) await this.ensureParts(remote, result);
     return dest;
+  }
+
+  /**
+   * The tracks / discs a .cue or .m3u names. They keep their place relative to
+   * it (localDir/remoteDir let a .cue we already have elsewhere get its tracks
+   * next to it).
+   */
+  async ensureParts(remote, result, localDir = null, remoteDir = null) {
+    for (const part of remote.parts) {
+      let rel = part.path;
+      if (localDir !== null && remoteDir !== null && localDir !== remoteDir) {
+        const inside = path.posix.relative(remoteDir, part.path);
+        if (!inside.startsWith('..')) rel = localDir === '.' ? inside : `${localDir}/${inside}`;
+      }
+      if ((await this.library.fileSha(rel)) === part.sha256) continue;
+      const dest = path.join(this.library.romsDir, ...safeRelParts(rel));
+      this.log(`${rel} (part of ${path.posix.basename(remote.path)}) downloading from your buddy`);
+      const backup = await downloadFromHost(this.client, 'rom', part.sha256, part.size, dest, rel, this.onProgress);
+      if (backup) result.warnings.push(`Your old copy was kept as ${path.basename(backup)}`);
+      result.downloaded.push(rel);
+    }
   }
 
   async ensureCore(remote, remotePlatform, result) {

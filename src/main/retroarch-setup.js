@@ -277,6 +277,23 @@ async function applySettings(file, changes) {
   return { file, backup: fs.existsSync(backup) ? backup : null };
 }
 
+/** RetroArch's system (BIOS) folder, from its config ("default" / ":\system" = next to retroarch.cfg). */
+function systemDir(cfgFile, settings = {}) {
+  const base = path.dirname(cfgFile);
+  const sd = String(settings.system_directory || '').trim();
+  if (!sd || sd === 'default') return path.join(base, 'system');
+  if (sd.startsWith(':')) return path.join(base, sd.slice(1));
+  return sd;
+}
+
+/** Which of a system's BIOS files are present (case-insensitive, like Windows). */
+async function biosStatus(dir, bios) {
+  let names = [];
+  try { names = (await fsp.readdir(dir)).map((n) => n.toLowerCase()); } catch { /* no folder yet */ }
+  const found = bios.files.filter((f) => names.includes(f.toLowerCase()));
+  return { ...bios, dir, found, ok: found.length > 0 };
+}
+
 async function readSettings(file) {
   try { return parseCfg(await fsp.readFile(file, 'utf8')); } catch { return {}; }
 }
@@ -288,11 +305,20 @@ async function readSettings(file) {
 const SYSTEMS = [
   { id: 'nes', label: 'NES / Famicom', core: 'fceumm_libretro', netplay: 'great' },
   { id: 'snes', label: 'Super Nintendo', core: 'snes9x_libretro', netplay: 'great' },
-  { id: 'genesis', label: 'Sega Genesis / Master System / Game Gear', core: 'genesis_plus_gx_libretro', netplay: 'great' },
+  {
+    id: 'genesis', label: 'Sega Genesis / Sega CD / Master System / Game Gear', core: 'genesis_plus_gx_libretro', netplay: 'great',
+    // Sega CD games need one of these in RetroArch's system folder (any region works for most games).
+    bios: { system: 'Sega CD', required: true, files: ['bios_CD_U.bin', 'bios_CD_E.bin', 'bios_CD_J.bin'] },
+  },
   { id: 'arcade', label: 'Arcade (FinalBurn Neo)', core: 'fbneo_libretro', netplay: 'great' },
   { id: 'pce', label: 'PC Engine / TurboGrafx-16', core: 'mednafen_pce_fast_libretro', netplay: 'great' },
   { id: 'gb', label: 'Game Boy / Color', core: 'gambatte_libretro', netplay: 'ok' },
   { id: 'gba', label: 'Game Boy Advance', core: 'mgba_libretro', netplay: 'ok' },
+  {
+    id: 'psx', label: 'PlayStation', core: 'pcsx_rearmed_libretro', netplay: 'ok',
+    // Optional: without one the core uses its built-in BIOS, which runs most games.
+    bios: { system: 'PS1', required: false, files: ['scph5501.bin', 'scph5500.bin', 'scph5502.bin', 'scph1001.bin', 'scph7001.bin', 'PSXONPSP660.bin'] },
+  },
   { id: 'atari', label: 'Atari 2600', core: 'stella_libretro', netplay: 'great' },
   { id: 'n64', label: 'Nintendo 64', core: 'mupen64plus_next_libretro', netplay: 'poor' },
 ];
@@ -300,6 +326,6 @@ const SYSTEMS = [
 module.exports = {
   classifyController, parseIds, chooseDriver, autoconfigDir, listProfiles, ensureProfiles,
   reservationSettings, netplaySlotSettings, SDL2_STANDARD_BINDS, XINPUT_DEVICE_NAME, GENERATED_PREFIX,
-  recommendedSettings, configPath, applySettings, readSettings, parseCfg,
+  recommendedSettings, configPath, applySettings, readSettings, parseCfg, systemDir, biosStatus,
   SYSTEMS, KINDS, MENU_COMBO_START_SELECT, ANALOG_DPAD_LSTICK,
 };
