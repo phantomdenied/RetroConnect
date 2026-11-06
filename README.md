@@ -60,11 +60,34 @@ Then, on the **Connect** page, enter each other's address.
 
 ## Connecting
 
+Pick a mode on the **Connect** page:
+
 | Mode | Setup |
 |---|---|
-| **Tailscale** (recommended) | Both install [Tailscale](https://tailscale.com/download). Use each other's `100.x.y.z` address. Traffic is encrypted and there's no router setup. |
+| **Tailscale** (recommended) | Encrypted, and no router setup. RetroConnect installs and connects it for you (below). |
 | **Direct** | Same Wi-Fi: use the LAN address shown on the Connect page. Over the internet: the host forwards TCP **55440** (file sync) and **55435** (netplay). File traffic is unencrypted in this mode. |
 | **Relay** | Gameplay goes through a libretro relay server, and the guest joins from RetroArch's *Netplay → Refresh Host List*. Downloading games still needs port 55440 reachable, so pair it with Tailscale or a port forward. |
+
+### Tailscale, step by step
+
+Only **one** of you needs a Tailscale account (free, using Google, Microsoft,
+GitHub or Apple to sign in). The other joins with a key and never signs up.
+
+**Player 1 (has the account):**
+1. Connect page → Tailscale → **Install Tailscale**. Click **Yes** on the Windows prompt.
+2. **Sign in.** Your browser opens; sign in or create the free account.
+3. Open **How to add your buddy → create a key**, click *Generate auth key*
+   (leave *Reusable* off), and send the `tskey-auth-…` key to your buddy privately.
+
+**Player 2 (no account):**
+1. Connect page → Tailscale → **Install Tailscale**, then click **Yes**.
+2. **My buddy sent me a key**, paste it, then click **Join**.
+
+Then each of you clicks **This is my buddy** next to the other's PC in the
+device list. Nobody types IP addresses.
+
+Treat the key like a password. Anyone with it can join your Tailscale network
+until it's used or expires. One-off keys stop working after one use.
 
 ## Building from source
 

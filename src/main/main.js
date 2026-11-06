@@ -69,6 +69,13 @@ function wireIpc() {
   handle('sync', (shas) => controller.syncGames(shas || null));
   handle('retroarch:latest', () => controller.checkRetroArchLatest());
   handle('retroarch:install', () => controller.installRetroArch());
+  handle('tailscale:refresh', () => controller.refreshTailscale());
+  handle('tailscale:latest', () => controller.checkTailscaleLatest());
+  handle('tailscale:install', () => controller.installTailscale());
+  handle('tailscale:login', (authKey) => controller.loginTailscale({ authKey: authKey || null }));
+  handle('tailscale:cancel', () => controller.cancelTailscaleLogin());
+  handle('tailscale:start', () => controller.startTailscale());
+  handle('tailscale:usePeer', (ip) => controller.useTailscalePeer(ip));
   handle('dialog:folder', async (title, defaultPath) => {
     const r = await dialog.showOpenDialog(win, { title, defaultPath, properties: ['openDirectory', 'createDirectory'] });
     return r.canceled ? null : r.filePaths[0];
@@ -89,6 +96,9 @@ function wireIpc() {
 function wireController() {
   controller.on('state', (s) => send('state', s));
   controller.on('log', (entry) => send('log', entry));
+  controller.on('openUrl', (url) => {
+    if (/^https:\/\//.test(url)) shell.openExternal(url);
+  });
   let lastProgress = 0;
   controller.on('progress', (p) => {
     const now = Date.now();

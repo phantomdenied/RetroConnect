@@ -213,3 +213,16 @@ table.cores td:first-child { width: 70px; font-family: var(--mono); color: var(-
 
 .ra-install { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
 .ok-text { color: var(--ok); font-weight: 600; font-size: 13px; }
+
+.ts-panel { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.ts-panel p { margin: 0; }
+.ts-step { display: flex; gap: 10px; align-items: flex-start; }
+.step-num { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #1a0b14; font-weight: 800; font-size: 12px; display: grid; place-items: center; flex: none; margin-top: 1px; }
+.peers { display: flex; flex-direction: column; gap: 6px; }
+.peer { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.peer.chosen { border-color: var(--ok); }
+.peer .grow { flex: 1; min-width: 0; }
+.ts-help summary { cursor: pointer; color: var(--accent-2); font-weight: 600; font-size: 13px; }
+.ts-help ol { font-size: 13px; color: var(--muted); }
+.ts-help li { margin-bottom: 4px; }
+.ts-panel .choice { margin-bottom: 0; }

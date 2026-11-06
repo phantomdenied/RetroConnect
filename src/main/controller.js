@@ -13,6 +13,7 @@ const platforms = require('./platforms');
 const launcher = require('./launcher');
 const { Library, retroarchVersion, clearVersionCache } = require('./library');
 const raInstaller = require('./retroarch-installer');
+const tailscaleLib = require('./tailscale');
 const { SyncServer } = require('./server');
 const { HostClient, Syncer, SyncError, compare } = require('./sync');
 
@@ -42,6 +43,7 @@ class Controller extends EventEmitter {
   constructor({
     dataDir, version = '0', pollMs = POLL_MS, launch = launcher.run, fetchCore,
     retroarchDir = path.join(dataDir, 'RetroArch'), installer = raInstaller,
+    tailscale = tailscaleLib,
   } = {}) {
     super();
     this.dataDir = dataDir;
@@ -66,6 +68,11 @@ class Controller extends EventEmitter {
     this.retroarchDir = retroarchDir; // where "Install RetroArch" puts it
     this.installer = installer;
     this.raLatest = null; // { version, url, size } from libretro, once checked
+    this.tailscale = tailscale;
+    this.ts = { installed: false, state: 'Unknown', peers: [] };
+    this.tsLogin = null; // { child, authUrl } while signing in
+    this.tsLatest = null;
+    this.tick = 0;
   }
 
   // ----- lifecycle -----------------------------------------------------------
@@ -80,6 +87,7 @@ class Controller extends EventEmitter {
   async dispose() {
     clearTimeout(this.pollTimer);
     this.pollTimer = null;
+    if (this.tsLogin && this.tsLogin.child) this.tsLogin.child.kill();
     if (this.hosting && this.hosting.child) this.hosting.child.kill();
     if (this.server) await this.server.stop();
     this.server = null;
@@ -149,6 +157,15 @@ class Controller extends EventEmitter {
       hosting: this.hosting ? { rom: this.hosting.rom, core: this.hosting.core } : null,
       playing: this.playing,
       busy: this.busy,
+      tailscale: {
+        ...this.ts,
+        canInstall: platforms.osName() === 'windows' || process.env.RETROCONNECT_ALLOW_TS_INSTALL === '1',
+        latest: this.tsLatest,
+        signingIn: Boolean(this.tsLogin),
+        authUrl: this.tsLogin ? this.tsLogin.authUrl : null,
+        keysPage: tailscaleLib.KEYS_PAGE,
+        machinesPage: tailscaleLib.MACHINES_PAGE,
+      },
     };
   }
 
@@ -181,6 +198,9 @@ class Controller extends EventEmitter {
   startPolling() {
     clearTimeout(this.pollTimer);
     const tick = async () => {
+      // Tailscale status is cheap; check it often only while it matters.
+      const tsMatters = this.cfg.connectionMode === 'tailscale' || this.tsLogin;
+      if (this.tick++ % (tsMatters ? 1 : 5) === 0) await this.refreshTailscale();
       await this.pollBuddy();
       if (this.pollTimer !== null) this.pollTimer = setTimeout(tick, this.pollMs);
     };
@@ -247,6 +267,95 @@ class Controller extends EventEmitter {
       };
     });
     return { rows, cores: local.cores, buddyOnline: Boolean(this.buddyManifest), romsDir: this.cfg.romsDir };
+  }
+
+  // ----- Tailscale ------------------------------------------------------------
+
+  async refreshTailscale() {
+    let next;
+    try { next = await this.tailscale.status(); } catch (err) { next = { installed: false, state: 'Unknown', peers: [], error: err.message }; }
+    const changed = JSON.stringify(next) !== JSON.stringify(this.ts);
+    this.ts = next;
+    if (changed) this.emitState();
+    return next;
+  }
+
+  async checkTailscaleLatest() {
+    this.tsLatest = await this.tailscale.latestInstaller();
+    this.emitState();
+    return this.tsLatest;
+  }
+
+  async installTailscale() {
+    return this.withBusy('Installing Tailscale', async () => {
+      const result = await this.tailscale.install({
+        release: this.tsLatest,
+        onProgress: (p) => this.progress(p),
+        log: (m) => this.log(m),
+      });
+      // The service takes a moment to come up after install.
+      for (let i = 0; i < 10; i++) {
+        const st = await this.refreshTailscale();
+        if (st.installed && st.state !== 'NotRunning') break;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      if (this.cfg.connectionMode !== 'tailscale') await this.saveSettings({ connectionMode: 'tailscale' });
+      return result;
+    });
+  }
+
+  /** Sign in (browser) or join with a key. Resolves once connected. */
+  async loginTailscale({ authKey = null } = {}) {
+    if (this.tsLogin) {
+      if (this.tsLogin.authUrl && !authKey) this.emit('openUrl', this.tsLogin.authUrl);
+      throw new Error('Already signing in. Finish in your browser, or cancel first.');
+    }
+    if (authKey && !/^tskey-/.test(authKey.trim())) {
+      throw new Error('That doesn\'t look like a Tailscale key (they start with "tskey-")');
+    }
+    this.tsLogin = { child: null, authUrl: null };
+    this.log(authKey ? 'Joining your buddy\'s Tailscale network with their key' : 'Opening Tailscale sign-in in your browser');
+    this.emitState();
+    try {
+      await this.tailscale.login(undefined, {
+        authKey,
+        onStart: (child) => { if (this.tsLogin) this.tsLogin.child = child; },
+        onAuthUrl: (url) => {
+          if (this.tsLogin) this.tsLogin.authUrl = url;
+          this.emit('openUrl', url);
+          this.emitState();
+        },
+      });
+    } finally {
+      this.tsLogin = null;
+      await this.refreshTailscale();
+      this.emitState(); // signingIn changed even if Tailscale's own status didn't
+    }
+    if (this.cfg.connectionMode !== 'tailscale') await this.saveSettings({ connectionMode: 'tailscale' });
+    const me = this.ts.self;
+    this.log(`Connected to Tailscale${me ? ` as ${me.name} (${me.ip})` : ''}`);
+    return this.state();
+  }
+
+  cancelTailscaleLogin() {
+    if (this.tsLogin && this.tsLogin.child) this.tsLogin.child.kill();
+  }
+
+  async startTailscale() {
+    this.tailscale.startApp();
+    for (let i = 0; i < 8; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      if ((await this.refreshTailscale()).state !== 'NotRunning') break;
+    }
+    return this.state();
+  }
+
+  async useTailscalePeer(ip) {
+    const peer = (this.ts.peers || []).find((p) => p.ip === ip);
+    if (!peer) throw new Error('That device is no longer on your Tailscale network');
+    await this.saveSettings({ peerAddress: peer.ip, connectionMode: 'tailscale' });
+    this.log(`Your buddy is ${peer.name} (${peer.ip})`);
+    return this.state();
   }
 
   // ----- RetroArch install ---------------------------------------------------

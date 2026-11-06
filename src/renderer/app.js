@@ -286,12 +286,7 @@ function modePicker(current, onPick) {
 }
 
 function modeHelp(cfg) {
-  if (cfg.connectionMode === 'tailscale') {
-    return h('div', { class: 'callout info' },
-      'Install Tailscale on both PCs and sign in to the same account (or share the machine). Use your buddy\'s ',
-      h('b', {}, '100.x.y.z'), ' address below. ',
-      h('button', { class: 'link-btn', onclick: () => act(() => rc.openUrl('https://tailscale.com/download')) }, 'Get Tailscale'));
-  }
+  if (cfg.connectionMode === 'tailscale') return tailscalePanel();
   if (cfg.connectionMode === 'relay') {
     return h('div', { class: 'callout' },
       `Netplay goes through the ${cfg.relayServer} relay, and the guest joins from RetroArch → Netplay → Refresh Host List. `,
@@ -494,6 +489,92 @@ function retroarchInstaller({ compact = false } = {}) {
     h('span', { class: 'muted small' }, installing ? 'Watch the progress bar at the bottom. This takes a minute or two.' : note.join(' · ')));
 }
 
+// ----- Tailscale panel --------------------------------------------------------
+
+let tsCheck = null;
+let tsKeyDraft = '';
+let tsShowKey = false;
+
+function tailscalePanel({ compact = false } = {}) {
+  const ts = S.tailscale;
+  const busyInstall = S.busy === 'Installing Tailscale';
+  const link = (label, url) => h('button', { class: 'link-btn', onclick: () => act(() => rc.openUrl(url)) }, label);
+  const box = (...kids) => h('div', { class: 'ts-panel' }, ...kids);
+
+  if (!ts.installed) {
+    if (!ts.canInstall) {
+      return box(h('p', {}, 'Tailscale isn\'t installed. ', link('Download Tailscale', 'https://tailscale.com/download')));
+    }
+    if (!ts.latest && !tsCheck) tsCheck = rc.tsLatest().catch((err) => { tsCheck = null; addLog({ message: err.message, level: 'warn', at: Date.now() }); });
+    const v = ts.latest && ts.latest.version ? ` ${ts.latest.version}` : '';
+    return box(
+      h('div', { class: 'ts-step' }, h('span', { class: 'step-num' }, '1'),
+        h('div', {}, h('b', {}, 'Install Tailscale'),
+          h('div', { class: 'muted small' }, 'Free, about 40 MB. Windows asks for permission once. Click Yes.'))),
+      h('div', { class: 'ra-install' },
+        h('button', { class: 'btn primary', disabled: Boolean(S.busy), onclick: () => act(() => rc.tsInstall(), { success: 'Tailscale installed' }) },
+          busyInstall ? 'Installing…' : `Install Tailscale${v}`)));
+  }
+
+  if (ts.state === 'NotRunning') {
+    return box(h('p', {}, 'Tailscale is installed but not running.'),
+      h('button', { class: 'btn primary', onclick: () => act(() => rc.tsStart()) }, 'Start Tailscale'));
+  }
+
+  if (ts.state !== 'Running') {
+    if (ts.signingIn) {
+      return box(
+        h('div', { class: 'row' }, h('span', { class: 'pulse' }),
+          h('b', {}, ts.authUrl ? 'Finish signing in in your browser…' : 'Connecting to Tailscale…')),
+        ts.authUrl ? h('p', { class: 'muted small' }, 'Didn\'t see a browser window? ', link('Open the sign-in page', ts.authUrl)) : null,
+        h('button', { class: 'btn small', onclick: () => act(() => rc.tsCancel()) }, 'Cancel'));
+    }
+    const keyInput = h('input', {
+      type: 'text', class: 'secret', placeholder: 'tskey-auth-…', value: tsKeyDraft,
+      oninput: (e) => { tsKeyDraft = e.target.value.trim(); },
+    });
+    return box(
+      h('div', { class: 'ts-step' }, h('span', { class: 'step-num' }, '2'),
+        h('div', {}, h('b', {}, 'Connect this PC to Tailscale'),
+          h('div', { class: 'muted small' }, 'One of you needs a free Tailscale account. The other can join with a key, no account needed.'))),
+      h('div', { class: 'choice' },
+        h('button', { class: 'mode', onclick: () => act(() => rc.tsLogin(), { success: 'Connected to Tailscale' }) },
+          h('strong', {}, 'Sign in'), h('span', {}, 'Opens your browser. Use Google, Microsoft, GitHub or Apple to sign in or create a free account.')),
+        h('button', { class: `mode ${tsShowKey ? 'active' : ''}`, onclick: () => { tsShowKey = true; render(); } },
+          h('strong', {}, 'My buddy sent me a key'), h('span', {}, 'Join their Tailscale network without making an account.'))),
+      tsShowKey ? h('div', { class: 'row' }, keyInput,
+        h('button', {
+          class: 'btn primary',
+          onclick: () => act(async () => { await rc.tsLogin(keyInput.value.trim()); tsKeyDraft = ''; tsShowKey = false; }, { success: 'Joined your buddy\'s Tailscale network' }),
+        }, 'Join')) : null);
+  }
+
+  // Connected
+  const me = ts.self || {};
+  const peers = ts.peers || [];
+  const current = S.config.peerAddress;
+  return box(
+    h('div', { class: 'row' }, h('span', { class: 'ok-text' }, `✓ On Tailscale as ${me.name || 'this PC'}`),
+      me.ip ? h('span', { class: 'mono muted' }, me.ip) : null,
+      me.ip ? h('button', { class: 'link-btn small', onclick: () => act(() => rc.copy(me.ip), { success: 'Copied' }) }, 'Copy') : null),
+    h('div', { class: 'label', style: 'margin-top:12px;font-weight:650;font-size:13px' }, 'Which one is your buddy?'),
+    peers.length
+      ? h('div', { class: 'peers' }, peers.map((p) => h('div', { class: `peer ${p.ip === current ? 'chosen' : ''}` },
+        h('span', { class: `dot ${p.online ? 'online' : ''}` }),
+        h('div', { class: 'grow' }, h('div', {}, h('b', {}, p.name), h('span', { class: 'muted small' }, `  ${p.os || ''}${p.online ? '' : ' · offline'}`)),
+          h('div', { class: 'mono muted' }, p.ip)),
+        p.ip === current
+          ? h('span', { class: 'ok-text' }, '✓ Your buddy')
+          : h('button', { class: 'btn small', onclick: () => act(() => rc.tsUsePeer(p.ip), { success: `${p.name} is your buddy` }) }, 'This is my buddy'))))
+      : h('div', { class: 'callout' }, 'Your buddy isn\'t on your Tailscale network yet.'),
+    compact ? null : h('details', { class: 'ts-help', open: !peers.length || null },
+      h('summary', {}, 'How to add your buddy'),
+      h('ol', { class: 'tight' },
+        h('li', {}, 'Easiest: ', link('create a key', ts.keysPage),
+          ' (click Generate auth key; leave Reusable off), copy it, and send it to your buddy privately. In RetroConnect they choose ', h('b', {}, 'My buddy sent me a key'), ' and paste it.'),
+        h('li', {}, 'Or, if they already have their own Tailscale account, share this PC with them from the ', link('Machines page', ts.machinesPage), ' (… menu → Share).'))));
+}
+
 // ----- first-run wizard ------------------------------------------------------
 
 const wiz = { step: 0, data: null, role: null };
@@ -557,6 +638,7 @@ function renderWizard() {
         h('input', { type: 'text', class: 'secret', value: d.sharedSecret, oninput: (e) => { d.sharedSecret = e.target.value.trim(); } })) : null,
       h('div', { class: 'field' }, h('div', { class: 'label' }, 'How will you connect?'),
         modePicker(d.connectionMode, (m) => { d.connectionMode = m; renderWizard(); })),
+      d.connectionMode === 'tailscale' ? tailscalePanel({ compact: true }) : null,
       h('div', { class: 'field' }, h('label', {}, "Buddy's address (optional; add it later on the Connect page)"),
         h('input', { type: 'text', value: d.peerAddress, placeholder: 'e.g. 100.101.102.103', oninput: (e) => { d.peerAddress = e.target.value; } })),
     ];
@@ -599,11 +681,14 @@ async function boot() {
     // Reload the merged game list when the buddy comes online / goes away.
     const key = `${s.buddy.status}:${s.buddy.romCount || 0}:${s.config.romsDir}`;
     if (key !== lastBuddyKey) { lastBuddyKey = key; loadLibrary().catch(() => {}); }
-    // Something changed RetroArch behind an open form (e.g. "Install RetroArch"):
+    // Something changed settings behind an open form (Install RetroArch, picking a Tailscale buddy):
     // carry it into the drafts so saving them doesn't undo it.
-    if (prev && JSON.stringify(prev.config.retroarchCommand) !== JSON.stringify(s.config.retroarchCommand)) {
-      if (draft) draft.retroarchCommand = [...s.config.retroarchCommand];
-      if (wiz.data) wiz.data.retroarchCommand = [...s.config.retroarchCommand];
+    for (const key of ['retroarchCommand', 'peerAddress', 'connectionMode']) {
+      if (prev && JSON.stringify(prev.config[key]) !== JSON.stringify(s.config[key])) {
+        const v = JSON.parse(JSON.stringify(s.config[key]));
+        if (draft) draft[key] = v;
+        if (wiz.data) wiz.data[key] = v;
+      }
     }
     // Don't rebuild a form while someone is typing in it.
     const typing = document.activeElement && document.activeElement.matches('input, select')
