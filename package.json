@@ -1,7 +1,7 @@
 {
   "name": "retroconnect",
   "productName": "RetroConnect",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Play RetroArch netplay with a friend: the host's exact core and ROM are synced to the guest automatically.",
   "main": "src/main/main.js",
   "author": {
@@ -46,11 +46,11 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "${productName}-${version}-win-setup.${ext}"
+      "artifactName": "${productName}-Setup.${ext}"
     },
     "publish": null,
     "portable": {
-      "artifactName": "${productName}-${version}-win-portable.${ext}"
+      "artifactName": "${productName}-Portable.${ext}"
     },
     "asarUnpack": [
       "node_modules/7zip-bin/**"

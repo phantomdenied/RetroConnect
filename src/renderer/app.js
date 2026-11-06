@@ -412,8 +412,25 @@ function updateBanner() {
     h('div', { class: 'grow' },
       h('div', { class: 'big' }, `RetroConnect ${u.latest} is available`),
       h('div', { class: 'muted small' }, u.notes || `You have ${u.current}. Download it, run it, and it updates in place. Your settings stay.`)),
-    h('button', { class: 'btn primary', onclick: () => act(() => rc.openUrl(u.url)) }, 'Download update'),
+    updateButton(u, 'btn primary'),
     h('button', { class: 'btn small', onclick: () => { hiddenUpdate = u.latest; renderBanner(); } }, 'Later'));
+}
+
+/** "Download update" -> progress -> "Restart to update". Opens the browser when the app can't update itself. */
+function updateButton(u, cls) {
+  if (!S.selfUpdate || !u.asset) {
+    return h('button', { class: cls, onclick: () => act(() => rc.openUrl(u.asset ? u.pageUrl : u.url)) }, 'Download update');
+  }
+  if (u.downloaded) {
+    return h('button', {
+      class: cls, disabled: Boolean(S.hosting || S.playing),
+      title: S.hosting || S.playing ? 'Finish your game first' : '',
+      onclick: () => act(() => rc.installUpdate(), { success: 'Updating. RetroConnect reopens by itself in a few seconds.' }),
+    }, 'Restart to update');
+  }
+  const downloading = S.busy === 'Downloading update';
+  return h('button', { class: cls, disabled: Boolean(S.busy), onclick: () => act(() => rc.downloadUpdate()) },
+    downloading ? 'Downloading…' : 'Download update');
 }
 
 // Dropdown filters on the Games page ('' = any).
@@ -664,6 +681,7 @@ function renderConnect() {
       h('h2', {}, 'How you connect'),
       modePicker(cfg.connectionMode, (m) => save({ connectionMode: m }, `Switched to ${m}`)),
       modeHelp(cfg)),
+    inviteCard(),
     h('div', { class: 'grid-2', style: 'margin-top:16px' },
       h('div', { class: 'card' },
         h('h2', {}, "Your buddy's address"),
@@ -710,6 +728,51 @@ function renderConnect() {
     cfg.connectionMode === 'direct' ? portCheckCard() : null,
     connectionCheckCard(),
     discordCard());
+}
+
+let inviteKey = '';
+let inviteCode = '';
+let inviteRedeem = '';
+/** One code with the secret, a Tailscale key and this PC's address. The buddy pastes it once. */
+function inviteCard() {
+  const cfg = S.config;
+  const ts = S.tailscale;
+  const wantsTs = cfg.connectionMode === 'tailscale';
+  const onTs = wantsTs && ts.installed && ts.state === 'Running';
+  const link = (label, url) => h('button', { class: 'link-btn', onclick: () => act(() => rc.openUrl(url)) }, label);
+  const keyInput = h('input', { type: 'text', class: 'secret', placeholder: 'tskey-auth-…', value: inviteKey, oninput: (e) => { inviteKey = e.target.value.trim(); inviteCode = ''; makeBtn.disabled = !/^tskey-/.test(inviteKey); } });
+  const makeBtn = h('button', {
+    class: 'btn primary', disabled: onTs && !/^tskey-/.test(inviteKey),
+    onclick: () => act(async () => { inviteCode = await rc.makeInvite({ tsKey: onTs ? inviteKey : null }); render(); }),
+  }, 'Make invite code');
+  const redeemInput = h('input', { type: 'text', class: 'secret', placeholder: 'RC1-…', value: inviteRedeem, oninput: (e) => { inviteRedeem = e.target.value.trim(); } });
+
+  let make;
+  if (wantsTs && !onTs) {
+    make = h('div', { class: 'callout' }, 'Set up Tailscale first (sign in below), so the invite can bring your buddy onto your Tailscale network.');
+  } else {
+    make = [
+      onTs ? h('ol', { class: 'tight' },
+        h('li', {}, link('Create a Tailscale key', ts.keysPage), ' (click Generate auth key, leave Reusable off, copy it).'),
+        h('li', {}, 'Paste it here:', h('div', { class: 'row', style: 'margin-top:6px' }, keyInput))) : null,
+      makeBtn,
+      inviteCode ? h('div', { class: 'row', style: 'margin-top:10px' },
+        h('input', { type: 'text', readonly: true, class: 'secret', value: inviteCode }),
+        h('button', { class: 'btn', onclick: () => act(() => rc.copy(inviteCode), { success: 'Invite copied. Send it to your buddy privately.' }) }, 'Copy')) : null,
+      inviteCode ? h('div', { class: 'hint' }, 'Send it privately (text or DM). Your buddy pastes it in RetroConnect and everything connects by itself.') : null,
+    ];
+  }
+  return h('div', { class: 'card', style: 'margin-top:16px' },
+    h('h2', {}, 'Invite your buddy'),
+    h('p', { class: 'muted small', style: 'margin-top:0' }, 'One code with everything they need: the shared secret', onTs ? ', a Tailscale key and your address.' : '.'),
+    make,
+    h('details', { class: 'ts-help', style: 'margin-top:12px' },
+      h('summary', {}, 'Got an invite code from your buddy?'),
+      h('div', { class: 'row', style: 'margin-top:8px' }, redeemInput,
+        h('button', {
+          class: 'btn primary', disabled: Boolean(S.busy),
+          onclick: () => act(async () => { await rc.redeemInvite(inviteRedeem); inviteRedeem = ''; }, { success: 'Invite accepted. You\'re connected.' }),
+        }, 'Use invite'))));
 }
 
 /** Direct mode: are this PC's ports open from the internet? Works without the buddy. */
@@ -916,7 +979,7 @@ function updatesCard(d) {
   if (!S.updateFeed && !d.updateFeedUrl) status = h('span', { class: 'muted' }, 'Not set up yet. Paste the update link from whoever publishes RetroConnect.');
   else if (u && u.checking) status = h('span', { class: 'muted' }, 'Checking…');
   else if (u && u.error) status = h('span', { style: 'color:var(--bad)' }, u.error);
-  else if (u && u.available) status = h('span', {}, h('b', {}, `Version ${u.latest} is available. `), h('button', { class: 'btn small primary', onclick: () => act(() => rc.openUrl(u.url)) }, 'Download update'));
+  else if (u && u.available) status = h('span', {}, h('b', {}, `Version ${u.latest} is available. `), updateButton(u, 'btn small primary'));
   else if (u && u.configured) status = h('span', { class: 'ok-text' }, `✓ You're up to date (checked ${new Date(u.checkedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`);
   return h('div', { class: 'card', style: 'margin-top:16px' },
     h('h2', {}, 'App updates'),
@@ -1214,12 +1277,15 @@ function tailscalePanel({ compact = false } = {}) {
     compact ? null : h('details', { class: 'ts-help', open: !peers.length || null },
       h('summary', {}, 'How to add your buddy'),
       h('ol', { class: 'tight' },
-        h('li', {}, 'Easiest: ', link('create a key', ts.keysPage),
-          ' (click Generate auth key; leave Reusable off), copy it, and send it to your buddy privately. In RetroConnect they choose ', h('b', {}, 'My buddy sent me a key'), ' and paste it.'),
+        h('li', {}, 'Easiest: use ', h('b', {}, 'Invite your buddy'), ' at the top of this page. It puts a Tailscale key, the shared secret and your address in one code.'),
+        h('li', {}, 'Or ', link('create a key', ts.keysPage),
+          ' (click Generate auth key; leave Reusable off) and send just that. In RetroConnect they choose ', h('b', {}, 'My buddy sent me a key'), ' and paste it.'),
         h('li', {}, 'Or, if they already have their own Tailscale account, share this PC with them from the ', link('Machines page', ts.machinesPage), ' (… menu → Share).'))));
 }
 
 // ----- first-run wizard ------------------------------------------------------
+
+const isInviteCode = (text) => /^RC1-/i.test(String(text || '').trim());
 
 const wiz = { step: 0, data: null, role: null };
 
@@ -1274,17 +1340,30 @@ function renderWizard() {
         h('button', {
           class: `mode ${wiz.role === 'paste' ? 'active' : ''}`,
           onclick: () => { wiz.role = 'paste'; d.sharedSecret = ''; renderWizard(); },
-        }, h('strong', {}, 'My buddy sent me one'), h('span', {}, 'Paste their secret'))),
+        }, h('strong', {}, 'My buddy sent me one'), h('span', {}, 'Paste their invite code or secret'))),
       wiz.role === 'create' ? h('div', { class: 'field' }, h('label', {}, 'Your shared secret'),
         h('div', { class: 'row' }, h('input', { type: 'text', value: d.sharedSecret, readonly: true, class: 'secret' }),
           h('button', { class: 'btn', onclick: () => act(() => rc.copy(d.sharedSecret), { success: 'Copied. Send it to your buddy.' }) }, 'Copy'))) : null,
-      wiz.role === 'paste' ? h('div', { class: 'field' }, h('label', {}, 'Shared secret from your buddy'),
-        h('input', { type: 'text', class: 'secret', value: d.sharedSecret, oninput: (e) => { d.sharedSecret = e.target.value.trim(); } })) : null,
-      h('div', { class: 'field' }, h('div', { class: 'label' }, 'How will you connect?'),
-        modePicker(d.connectionMode, (m) => { d.connectionMode = m; renderWizard(); })),
-      d.connectionMode === 'tailscale' ? tailscalePanel({ compact: true }) : null,
-      h('div', { class: 'field' }, h('label', {}, "Buddy's address (optional; add it later on the Connect page)"),
-        h('input', { type: 'text', value: d.peerAddress, placeholder: 'e.g. 100.101.102.103', oninput: (e) => { d.peerAddress = e.target.value; } })),
+      wiz.role === 'paste' ? h('div', { class: 'field' }, h('label', {}, 'Invite code (or secret) from your buddy'),
+        h('input', {
+          type: 'text', class: 'secret', value: d.sharedSecret, placeholder: 'RC1-…',
+          oninput: (e) => {
+            const was = isInviteCode(d.sharedSecret);
+            d.sharedSecret = e.target.value.trim();
+            if (was !== isInviteCode(d.sharedSecret)) renderWizard();
+            else $('#wizard .wizard-actions .btn.primary').disabled = !d.sharedSecret;
+          },
+        })) : null,
+      isInviteCode(d.sharedSecret)
+        ? h('div', { class: 'callout' }, '✓ Invite code. Click Finish and RetroConnect connects you to your buddy by itself (it may install Tailscale; click Yes if Windows asks).')
+        : [
+          h('div', { class: 'field' }, h('div', { class: 'label' }, 'How will you connect?'),
+            modePicker(d.connectionMode, (m) => { d.connectionMode = m; renderWizard(); })),
+          d.connectionMode === 'tailscale' ? tailscalePanel({ compact: true }) : null,
+          wiz.role === 'create' ? h('p', { class: 'muted small' }, 'Tip: after setup, Connect → Invite your buddy makes one code with this secret and a Tailscale key, so your buddy only pastes once.') : null,
+          h('div', { class: 'field' }, h('label', {}, "Buddy's address (optional; add it later on the Connect page)"),
+            h('input', { type: 'text', value: d.peerAddress, placeholder: 'e.g. 100.101.102.103', oninput: (e) => { d.peerAddress = e.target.value; } })),
+        ],
     ];
   }
 
@@ -1297,7 +1376,17 @@ function renderWizard() {
       last
         ? h('button', {
           class: 'btn primary', disabled: !d.sharedSecret,
-          onclick: () => act(async () => { await rc.saveSettings(d); wiz.data = null; await loadLibrary(); }, { success: "You're all set!" }),
+          onclick: () => act(async () => {
+            if (isInviteCode(d.sharedSecret)) {
+              const { sharedSecret: code, ...rest } = d;
+              wiz.data = null;
+              await rc.redeemInvite(code, rest);
+            } else {
+              await rc.saveSettings(d);
+              wiz.data = null;
+            }
+            await loadLibrary();
+          }, { success: "You're all set!" }),
         }, 'Finish')
         : h('button', { class: 'btn primary', disabled: wiz.step === 0 && !(d.nickname.trim() && d.romsDir.trim()), onclick: next }, 'Next'))));
 }

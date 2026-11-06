@@ -13,9 +13,15 @@
 //     "notes": "What changed (optional)" }
 //
 // The app compares versions and, if newer, offers a Download button that
-// opens the installer link in the browser. Nothing is downloaded or run
-// automatically.
+// downloads the installer inside the app; "Restart to update" runs it
+// silently and the new version opens by itself. Nothing is downloaded or
+// installed without a click. Portable and dev copies open the release page.
 
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 const { compareVersions } = require('./retroarch-installer');
 
 const GITHUB_LATEST = (repo) => `https://api.github.com/repos/${repo}/releases/latest`;
@@ -32,7 +38,9 @@ function validFeed(data) {
 // Release notes are markdown and can be long; the banner wants a line or two.
 function plainNotes(md) {
   const text = String(md || '')
+    .replace(/<!-- guide -->[\s\S]*?<!-- \/guide -->/g, '') // release-page text for newcomers
     .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .split(/\r?\n/)
     .map((l) => l.replace(/^#+\s*/, '').replace(/^[*-]\s+/, '• ').replace(/\*\*|__|`/g, '').trim())
     .filter((l) => l && !/^Full Changelog/i.test(l))
@@ -46,11 +54,53 @@ function feedFromRelease(rel) {
   const assets = Array.isArray(rel.assets) ? rel.assets : [];
   const pick = (re) => assets.find((a) => re.test(a.name || ''));
   const asset = pick(/-win-setup\.exe$/i) || pick(/setup.*\.exe$/i) || pick(/\.exe$/i);
-  return validFeed({
+  const feed = validFeed({
     version: rel.tag_name,
     url: (asset && asset.browser_download_url) || rel.html_url,
     notes: plainNotes(rel.body),
   });
+  feed.pageUrl = /^https:\/\//.test(rel.html_url || '') ? rel.html_url : feed.url;
+  // Only the setup installer can update in place (the portable exe can't).
+  if (asset && /setup.*\.exe$/i.test(asset.name) && /^https:\/\//.test(asset.browser_download_url || '')) {
+    const digest = /^sha256:[0-9a-f]{64}$/i.test(asset.digest || '') ? asset.digest.slice(7).toLowerCase() : null;
+    feed.asset = {
+      name: path.basename(String(asset.name)).replace(/[^\w.-]/g, '_'),
+      url: asset.browser_download_url,
+      size: Number(asset.size) || 0,
+      sha256: digest,
+    };
+  }
+  return feed;
+}
+
+/**
+ * Download the installer to `dest`, checking its size and (when GitHub gives
+ * one) its SHA-256. Writes to dest.partial first so a cut-off download is
+ * never mistaken for a finished one.
+ */
+async function downloadAsset(asset, dest, { fetchImpl = globalThis.fetch, onProgress = null } = {}) {
+  const res = await fetchImpl(asset.url, { headers: { 'User-Agent': 'RetroConnect' } });
+  if (!res.ok || !res.body) throw new Error(`Download failed (HTTP ${res.status})`);
+  const total = asset.size || Number(res.headers.get('content-length')) || 0;
+  const tmp = `${dest}.partial`;
+  const hash = crypto.createHash('sha256');
+  let done = 0;
+  const body = Readable.fromWeb(res.body);
+  body.on('data', (chunk) => {
+    done += chunk.length;
+    hash.update(chunk);
+    if (onProgress) onProgress({ done, total });
+  });
+  try {
+    await pipeline(body, fs.createWriteStream(tmp));
+    if (asset.size && done !== asset.size) throw new Error('Download was cut off; try again');
+    if (asset.sha256 && hash.digest('hex') !== asset.sha256) throw new Error('The download is damaged (checksum mismatch); try again');
+    await fs.promises.rename(tmp, dest);
+  } catch (err) {
+    await fs.promises.rm(tmp, { force: true });
+    throw err;
+  }
+  return dest;
 }
 
 function isGithubRepo(s) {
@@ -86,10 +136,12 @@ async function checkForUpdate({ feedUrl, githubRepo, currentVersion, fetchImpl =
     latest: feed.version,
     available: compareVersions(feed.version, currentVersion) > 0,
     url: feed.url,
+    pageUrl: feed.pageUrl || feed.url,
+    asset: feed.asset || null,
     notes: feed.notes,
     source: fromGithub ? `github.com/${githubRepo}` : url,
     checkedAt: Date.now(),
   };
 }
 
-module.exports = { checkForUpdate, validFeed, feedFromRelease, isGithubRepo, GITHUB_LATEST };
+module.exports = { checkForUpdate, validFeed, feedFromRelease, downloadAsset, isGithubRepo, GITHUB_LATEST };

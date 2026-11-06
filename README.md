@@ -58,14 +58,20 @@ mismatched files. Then RetroArch launches and connects for both of you.
   (Connect page) and both of you get a button for it.
 - **RetroArch setup** page: one button installs RetroArch, the cores for the
   systems you tick, and controller-friendly settings (below).
-- **Update notice** when a new RetroConnect version is published (below).
+- **One-paste invite**: one code pairs your buddy, installs Tailscale and connects them.
+- **Updates itself**: Download update, then Restart to update (below).
 
 ## Install (Windows)
 
 Download from the [Releases page](https://github.com/phantomdenied/RetroConnect/releases):
 
-- `RetroConnect-x.y.z-win-setup.exe`: normal installer (Start menu shortcut, uninstaller)
-- `RetroConnect-x.y.z-win-portable.exe`: no install, just run it
+- `RetroConnect-Setup.exe`: normal installer (Start menu shortcut, uninstaller).
+  It updates itself in the app. Permanent link to the newest one:
+  <https://github.com/phantomdenied/RetroConnect/releases/latest/download/RetroConnect-Setup.exe>
+- `RetroConnect-Portable.exe`: no install, just run it (updates open the release page)
+
+Setting it up for a friend? Send them [FRIEND-GUIDE.md](FRIEND-GUIDE.md), a
+click-by-click walkthrough.
 
 The app isn't code-signed, so the first time Windows shows **"Windows protected
 your PC"**. Click **More info → Run anyway**.
@@ -160,6 +166,16 @@ The setup wizard asks for:
 
 Then, on the **Connect** page, enter each other's address.
 
+**Easier: an invite code.** Whoever set up first opens **Connect → Invite your
+buddy** and clicks **Make invite code**. With Tailscale connected it asks for a
+Tailscale key first. The `RC1-…` code holds the shared secret, that key and
+this PC's Tailscale address. The buddy pastes it under *My buddy sent me one*
+in the setup wizard (or *Got an invite code?* on the Connect page). Their app
+saves the secret, installs Tailscale, joins with the key and points at the
+inviter. The inviter's app picks up the buddy's address from their first
+connection, so nobody types an address. Send the code privately: it contains
+the secret and a key.
+
 ## Connecting
 
 Pick a mode on the **Connect** page:
@@ -181,12 +197,16 @@ GitHub or Apple to sign in). The other joins with a key and never signs up.
 3. Open **How to add your buddy → create a key**, click *Generate auth key*
    (leave *Reusable* off), and send the `tskey-auth-…` key to your buddy privately.
 
+   Or better: paste the key into **Invite your buddy** (top of the Connect page)
+   and send the `RC1-…` invite code instead. It does everything below by itself.
+
 **Player 2 (no account):**
 1. Connect page → Tailscale → **Install Tailscale**, then click **Yes**.
 2. **My buddy sent me a key**, paste it, then click **Join**.
 
 Then each of you clicks **This is my buddy** next to the other's PC in the
-device list. Nobody types IP addresses.
+device list. Nobody types IP addresses. (With an invite code, none of this is
+needed.)
 
 Treat the key like a password. Anyone with it can join your Tailscale network
 until it's used or expires. One-off keys stop working after one use.
@@ -206,18 +226,21 @@ Building on Linux/macOS needs Wine installed.
 
 The app checks this repo's **GitHub Releases** (`phantomdenied/RetroConnect`,
 set in `package.json` under `"retroconnect": { "githubRepo": … }`). When
-a newer release exists it shows a **Download update** banner, and the button
-downloads that release's `-win-setup.exe`. The repo has to be **public** for
+a newer release exists it shows a **Download update** banner. The button
+downloads the release's `RetroConnect-Setup.exe` inside the app (checking its
+size and GitHub's SHA-256), then **Restart to update** runs it silently
+(`/S --force-run`) and the new version opens by itself. The portable exe and
+`npm start` can't replace themselves, so there the button opens the release page. The repo has to be **public** for
 this, because the app checks without signing in to GitHub.
 
 **Each release:**
-1. Bump `"version"` in `package.json` (e.g. `0.7.1` → `0.7.2`), commit, and
+1. Bump `"version"` in `package.json` (e.g. `0.7.2` → `0.7.3`), commit, and
    push to `main`.
 2. Tag it and push the tag:
 
    ```sh
-   git tag v0.7.2
-   git push origin v0.7.2
+   git tag v0.7.3
+   git push origin v0.7.3
    ```
 
    The *Build Windows installer* workflow builds the installer and publishes

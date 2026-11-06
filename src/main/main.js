@@ -81,6 +81,15 @@ function wireIpc() {
   handle('favorite', (sha) => controller.toggleFavorite(String(sha)));
   handle('suggest:clear', () => controller.clearSuggestion());
   handle('update:check', () => controller.checkForUpdates());
+  handle('update:download', () => controller.downloadUpdate());
+  handle('update:install', () => {
+    controller.installUpdate();
+    // Get out of the installer's way; it reopens the new version.
+    setTimeout(() => app.quit(), 400);
+    return true;
+  });
+  handle('invite:make', (opts) => controller.makeInvite(opts || {}));
+  handle('invite:redeem', (code, extra) => controller.redeemInvite(String(code || ''), extra || {}));
   handle('ra-setup:info', () => controller.retroarchSetupInfo());
   handle('ra-setup:apply', (opts) => controller.applyRetroArchSettings(opts || {}));
   handle('ra-setup:cores', (names) => controller.installCores(Array.isArray(names) ? names : []));
@@ -162,6 +171,8 @@ app.whenReady().then(async () => {
     version: app.getVersion(),
     updateFeedDefault: (require('../../package.json').retroconnect || {}).updateFeedUrl || '',
     githubRepo: (require('../../package.json').retroconnect || {}).githubRepo || '',
+    // Only an installed copy can update itself; the portable exe and `npm start` can't.
+    selfUpdate: app.isPackaged && !process.env.PORTABLE_EXECUTABLE_FILE && process.platform === 'win32',
     // Store covers small: 160 px wide is plenty for the game list.
     resizeImage: async (buf) => {
       const img = nativeImage.createFromBuffer(buf);

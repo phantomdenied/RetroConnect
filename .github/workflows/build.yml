@@ -50,3 +50,8 @@ jobs:
         with:
           files: dist/*.exe
           generate_release_notes: true
+          body: |
+            <!-- guide -->
+            **New here?** Download **RetroConnect-Setup.exe** below and follow the [setup guide](https://github.com/phantomdenied/RetroConnect/blob/main/FRIEND-GUIDE.md).
+            Already have RetroConnect? It offers this update by itself.
+            <!-- /guide -->

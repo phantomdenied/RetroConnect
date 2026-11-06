@@ -7,6 +7,7 @@
 
 const { EventEmitter } = require('events');
 const os = require('os');
+const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const platforms = require('./platforms');
@@ -15,6 +16,7 @@ const { Library, retroarchVersion, clearVersionCache } = require('./library');
 const raInstaller = require('./retroarch-installer');
 const tailscaleLib = require('./tailscale');
 const updater = require('./updater');
+const invite = require('./invite');
 const raSetup = require('./retroarch-setup');
 const { fetchCoreFromBuildbot, HttpError } = require('./sync');
 const netcheck = require('./netcheck');
@@ -75,7 +77,7 @@ class Controller extends EventEmitter {
     dataDir, version = '0', pollMs = POLL_MS, launch = launcher.run, fetchCore,
     retroarchDir = path.join(dataDir, 'RetroArch'), installer = raInstaller,
     tailscale = tailscaleLib,
-    updateFeedDefault = '', githubRepo = '', fetchImpl = globalThis.fetch, resizeImage = null,
+    updateFeedDefault = '', githubRepo = '', selfUpdate = false, fetchImpl = globalThis.fetch, resizeImage = null,
     netplaySend = netplayControl.sendCommand,
   } = {}) {
     super();
@@ -110,6 +112,7 @@ class Controller extends EventEmitter {
     this.tick = 0;
     this.updateFeedDefault = updateFeedDefault;
     this.githubRepo = githubRepo;
+    this.selfUpdate = selfUpdate; // installed copy (not portable, not dev): can run the new installer
     this.fetchImpl = fetchImpl;
     this.update = null; // result of the last update check
     this.suggestionSeq = 0;
@@ -183,7 +186,8 @@ class Controller extends EventEmitter {
       server.discordUrl = this.cfg.discordUrl;
       server.versions = { app: this.version, retroarch: this.raVersion };
       server.onNetplayProbe = () => this.openNetplayProbe();
-    server.onSwapPoll = (request) => this.onSwapPoll(request);
+      server.onSwapPoll = (request) => this.onSwapPoll(request);
+      server.onRequest = (_url, addr) => this.noteBuddyAddress(addr);
       server.onProbeBack = (addr, port) => netcheck.tcpReachable(addr, port);
       server.onSaveLookup = (sha) => this.lookupSave(sha);
       this.server = server;
@@ -221,6 +225,7 @@ class Controller extends EventEmitter {
       netplay: this.netplayState(),
       busy: this.busy,
       update: this.update,
+      selfUpdate: this.selfUpdate,
       updateFeed: this.updateFeed(),
       discord: this.discordLink(),
       mySuggestion: this.mySuggestion || null,
@@ -953,7 +958,9 @@ class Controller extends EventEmitter {
     this.update = { ...(this.update || {}), checking: true };
     this.emitState();
     try {
+      const before = this.update;
       this.update = await updater.checkForUpdate({ feedUrl: this.cfg.updateFeedUrl || this.updateFeedDefault || '', githubRepo: this.githubRepo, currentVersion: this.version, fetchImpl: this.fetchImpl });
+      if (before && before.downloaded && before.latest === this.update.latest) this.update.downloaded = before.downloaded;
       if (this.update.available) this.log(`RetroConnect ${this.update.latest} is available`);
     } catch (err) {
       this.update = { configured: true, error: err.message, checkedAt: Date.now() };
@@ -1133,6 +1140,98 @@ class Controller extends EventEmitter {
     await this.saveSettings({ peerAddress: peer.ip, connectionMode: 'tailscale' });
     this.log(`Your buddy is ${peer.name} (${peer.ip})`);
     return this.state();
+  }
+
+  // ----- invites ---------------------------------------------------------------
+
+  /** One code for the buddy: the shared secret, an optional Tailscale key, my address. */
+  makeInvite({ tsKey = null } = {}) {
+    const ts = this.ts || {};
+    const address = this.cfg.connectionMode === 'tailscale' && ts.self && ts.self.ip ? ts.self.ip : null;
+    if (tsKey && !address) throw new Error('Connect this PC to Tailscale first');
+    return invite.makeInvite({ secret: this.cfg.sharedSecret, tsKey: tsKey || null, address, nickname: this.cfg.nickname });
+  }
+
+  /**
+   * The buddy's side: apply an invite (plus any first-run settings). Saves the
+   * secret and the inviter's address, then installs and joins Tailscale with
+   * the key in it.
+   */
+  async redeemInvite(code, extra = {}) {
+    const inv = invite.parseInvite(code);
+    const partial = { ...extra, sharedSecret: inv.secret };
+    if (inv.tsKey) partial.connectionMode = 'tailscale';
+    if (inv.address) partial.peerAddress = inv.address;
+    await this.saveSettings(partial);
+    this.log(`Invite accepted${inv.nickname ? ` from ${inv.nickname}` : ''}`);
+    if (inv.tsKey) {
+      let ts = await this.refreshTailscale();
+      if (!ts.installed) {
+        const canInstall = platforms.osName() === 'windows' || process.env.RETROCONNECT_ALLOW_TS_INSTALL === '1';
+        if (!canInstall) throw new Error('Install Tailscale from tailscale.com, then paste the invite again');
+        if (!this.tsLatest) await this.checkTailscaleLatest();
+        await this.installTailscale();
+        ts = this.ts;
+      }
+      if (ts.state === 'NotRunning') { await this.startTailscale(); ts = this.ts; }
+      // Already on the inviter's network (e.g. pasted twice)? Then the key isn't needed.
+      const already = ts.state === 'Running' && inv.address && (ts.peers || []).some((p) => p.ip === inv.address);
+      if (!already) await this.loginTailscale({ authKey: inv.tsKey });
+      if (inv.address) await this.saveSettings({ peerAddress: inv.address, connectionMode: 'tailscale' });
+    }
+    this.pollBuddy().catch(() => {});
+    return this.state();
+  }
+
+  /**
+   * Inviter's side: the buddy's app just made a request with our shared secret,
+   * so its address is the buddy's. Saved only while no address is set yet.
+   */
+  noteBuddyAddress(remote) {
+    const addr = String(remote || '').replace(/^::ffff:/, '');
+    if (!addr || this.cfg.peerAddress || this.notingBuddy || /^127\.|^::1$/.test(addr)) return;
+    this.notingBuddy = true;
+    this.saveSettings({ peerAddress: addr })
+      .then(() => { this.log(`Your buddy connected from ${addr}. Saved as their address.`); return this.pollBuddy(); })
+      .catch(() => {})
+      .finally(() => { this.notingBuddy = false; });
+  }
+
+  // ----- installing updates -----------------------------------------------------
+
+  /** Download the new installer (setup .exe) from the release. */
+  async downloadUpdate() {
+    const u = this.update;
+    if (!u || !u.available) throw new Error('No update to download');
+    if (!this.selfUpdate || !u.asset) {
+      this.emit('openUrl', u.asset ? u.pageUrl : u.url);
+      return this.update;
+    }
+    return this.withBusy('Downloading update', async () => {
+      const dir = path.join(this.dataDir, 'updates');
+      await fs.promises.rm(dir, { recursive: true, force: true });
+      await fs.promises.mkdir(dir, { recursive: true });
+      const dest = path.join(dir, u.asset.name);
+      await updater.downloadAsset(u.asset, dest, {
+        fetchImpl: this.fetchImpl,
+        onProgress: (p) => this.progress({ label: `Downloading RetroConnect ${u.latest}`, ...p }),
+      });
+      this.update = { ...this.update, downloaded: dest };
+      this.log(`RetroConnect ${u.latest} downloaded. Restart to update.`);
+      return this.update;
+    });
+  }
+
+  /** Start the installer silently; it closes this app and opens the new one. */
+  installUpdate({ spawnImpl = require('child_process').spawn } = {}) {
+    const file = this.update && this.update.downloaded;
+    if (!file || !fs.existsSync(file)) throw new Error('Download the update first');
+    if (this.hosting || this.playing) throw new Error('Finish your game first, then restart to update');
+    // NSIS: /S = no questions, --force-run = open RetroConnect again afterwards.
+    const child = spawnImpl(file, ['/S', '--force-run'], { detached: true, stdio: 'ignore' });
+    if (child && child.unref) child.unref();
+    this.log(`Installing RetroConnect ${this.update.latest}. It reopens by itself in a few seconds.`);
+    return true;
   }
 
   // ----- RetroArch install ---------------------------------------------------
