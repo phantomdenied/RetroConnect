@@ -920,9 +920,15 @@ function renderSettings() {
           h('div', { class: 'field', style: 'flex:1' }, h('label', {}, 'Sync port'),
             h('input', { type: 'number', value: d.syncPort, oninput: bind('syncPort', Number) }))),
         lagField(d),
+        h('div', { class: 'field' }, h('label', {}, 'Theme'),
+          h('select', {
+            onchange: (e) => { d.theme = e.target.value; applyTheme(d.theme); },
+          },
+          THEMES.map(([value, label]) => h('option', { value, selected: d.theme === value }, label))),
+          h('div', { class: 'hint' }, 'Shows right away; Save settings to keep it.')),
         h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: d.retroEffects, onchange: bind('retroEffects') }),
           h('div', {}, h('div', {}, h('b', {}, 'Retro effects')),
-            h('div', { class: 'muted small' }, 'Moving neon grid and CRT scanlines. Turn off for a still background (also off if Windows has animations turned off).'))),
+            h('div', { class: 'muted small' }, 'The moving background (scrolling world, or neon grid and CRT lines). Turn off for a still background (also off if Windows has animations turned off).'))),
         h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: d.showBoxArt, onchange: bind('showBoxArt') }),
           h('div', {}, h('div', {}, h('b', {}, 'Show box art')),
             h('div', { class: 'muted small' }, 'Covers come from libretro\'s thumbnail server (the one RetroArch uses), looked up by game name, and are stored on this PC.'))),
@@ -971,6 +977,14 @@ function lagField(d) {
       h('option', { value: '0', selected: d.lagFrames === 0 }, 'Off'),
       [1, 2, 3, 4, 5, 6].map((n) => h('option', { value: String(n), selected: d.lagFrames === n }, `${n} frame${n === 1 ? '' : 's'}`))),
     h('div', { class: 'hint' }, 'Adds a tiny input delay so online games stutter less. Automatic picks it from your ping. ', lagText(S.lag)));
+}
+
+const THEMES = [['pixel', '8-bit platformer'], ['synthwave', 'Synthwave arcade']];
+/** Swap the theme stylesheet (theme-<name>.css). */
+function applyTheme(name) {
+  const link = document.getElementById('theme-css');
+  const want = `theme-${THEMES.some(([v]) => v === name) ? name : 'pixel'}.css`;
+  if (link && link.getAttribute('href') !== want) link.setAttribute('href', want);
 }
 
 function updatesCard(d) {
@@ -1414,7 +1428,7 @@ let lastBuddyKey = '';
 async function boot() {
   document.querySelectorAll('.nav-item').forEach((b) => b.addEventListener('click', () => {
     view = b.dataset.view;
-    if (view !== 'settings') draft = null;
+    if (view !== 'settings') { draft = null; applyTheme(S.config.theme); } // drop an unsaved theme preview
     render();
   }));
   $('#buddy-card').addEventListener('click', () => { view = 'buddy'; render(); });
@@ -1424,6 +1438,7 @@ async function boot() {
     const prev = S;
     S = s;
     document.body.classList.toggle('no-fx', s.config.retroEffects === false);
+    applyTheme(s.config.theme);
     // Reload the merged game list when the buddy comes online / goes away.
     const key = `${s.buddy.status}:${s.buddy.romCount || 0}:${s.config.romsDir}`;
     if (key !== lastBuddyKey) { lastBuddyKey = key; loadLibrary().catch(() => {}); }

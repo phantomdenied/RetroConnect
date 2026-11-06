@@ -5,15 +5,25 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: rcthumb:">
   <title>RetroConnect</title>
   <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="theme-synthwave.css">
+  <link rel="stylesheet" href="theme-pixel.css" id="theme-css">
 </head>
 <body>
-  <!-- Synthwave backdrop, all CSS: stars, striped sun, mountains, moving grid. -->
+  <!-- Backdrop. Each theme styles its own parts; the others stay empty.
+       synthwave: stars, striped sun, mountains, moving grid.
+       pixel: clouds, hills, floating blocks, coins, ground, a little robot. -->
   <div class="scene" aria-hidden="true">
     <div class="sky"></div>
     <div class="sun"></div>
     <div class="mountains"></div>
     <div class="floor"><div class="grid"></div></div>
+    <div class="px-layer px-clouds far"></div>
+    <div class="px-layer px-clouds"></div>
+    <div class="px-layer px-hills-far"></div>
+    <div class="px-layer px-hills-near"></div>
+    <div class="px-layer px-platforms"></div>
+    <div class="px-coins"><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="px-layer px-ground"></div>
+    <div class="px-hero"></div>
   </div>
   <div id="app" class="app">
     <aside class="sidebar">
