@@ -48,7 +48,7 @@ function defaults() {
     lagFrames: -1, // netplay input delay frames: -1 = automatic from ping, 0 = off
     shareSaves: true, // pull your buddy's newer battery save before hosting
     showBoxArt: true, // fetch covers from libretro's thumbnail server
-    theme: 'pixel', // 'pixel' (8-bit platformer) or 'synthwave'
+    theme: 'pixel', // 'pixel' (8-bit platformer), 'space' (space shooter) or 'synthwave'
     retroEffects: true, // animated background (scrolling world / neon grid, CRT lines); off = still
     discordUrl: '', // invite or channel link for the Discord you both hang out in
     updateFeedUrl: '', // public JSON announcing new versions (overrides the built-in one)
@@ -67,7 +67,7 @@ function isDiscordUrl(u) {
   }
 }
 
-const THEMES = ['pixel', 'synthwave'];
+const THEMES = ['pixel', 'space', 'synthwave'];
 
 function generateSecret() {
   return crypto.randomBytes(18).toString('base64url');

@@ -60,6 +60,8 @@ mismatched files. Then RetroArch launches and connects for both of you.
   systems you tick, and controller-friendly settings (below).
 - **One-paste invite**: one code pairs your buddy, installs Tailscale and connects them.
 - **Updates itself**: Download update, then Restart to update (below).
+- **Themes** (Settings → Theme): 8-bit platformer, Space shooter or Synthwave arcade, all
+  original art drawn in code (no image files). Retro effects off stops the motion.
 
 ## Install (Windows)
 

@@ -979,7 +979,7 @@ function lagField(d) {
     h('div', { class: 'hint' }, 'Adds a tiny input delay so online games stutter less. Automatic picks it from your ping. ', lagText(S.lag)));
 }
 
-const THEMES = [['pixel', '8-bit platformer'], ['synthwave', 'Synthwave arcade']];
+const THEMES = [['pixel', '8-bit platformer'], ['space', 'Space shooter'], ['synthwave', 'Synthwave arcade']];
 /** Swap the theme stylesheet (theme-<name>.css). */
 function applyTheme(name) {
   const link = document.getElementById('theme-css');
