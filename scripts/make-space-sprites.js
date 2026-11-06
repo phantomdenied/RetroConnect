@@ -143,7 +143,7 @@ const block = [
   ...Object.entries(SPRITES).map(([k, v]) => `  --sp-${k}: ${v};`),
   '}',
   '/* sprites:end */',
-].join('\n');
+].join(css.includes('\r\n') ? '\r\n' : '\n'); // keep the file's line endings
 if (!css.includes('sprites:start')) throw new Error('No sprites:start/end markers in theme-space.css');
 fs.writeFileSync(file, css.replace(/\/\* sprites:start[\s\S]*?sprites:end \*\//, block));
 console.log(`Wrote ${Object.keys(SPRITES).length} sprites into ${path.relative(process.cwd(), file)}`);

@@ -234,7 +234,7 @@ const block = [
   ...Object.entries(SPRITES).map(([k, v]) => `  --px-${k}: ${v};`),
   '}',
   '/* sprites:end */',
-].join('\n');
+].join(css.includes('\r\n') ? '\r\n' : '\n'); // keep the file's line endings
 const out = css.replace(/\/\* sprites:start[\s\S]*?sprites:end \*\//, block);
 if (out === css && !css.includes('sprites:start')) throw new Error('No sprites:start/end markers in theme-pixel.css');
 fs.writeFileSync(file, out);
