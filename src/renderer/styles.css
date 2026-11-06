@@ -254,3 +254,14 @@ table.cores td:first-child { width: 70px; font-family: var(--mono); color: var(-
 .pad-assign { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); font-weight: 600; }
 .pad .grow { flex: 1; }
 .warn-text { color: var(--warn); }
+
+.bad-text { color: var(--bad); }
+.compat { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.compat .btn { margin-left: 6px; }
+.checks { display: flex; flex-direction: column; gap: 10px; }
+.check-line { display: flex; gap: 10px; align-items: flex-start; }
+.check-line > span:first-child { font-weight: 800; min-width: 18px; }
+.ping { font: 800 13px var(--mono); padding: 3px 8px; border-radius: 6px; background: var(--panel-2); white-space: nowrap; }
+.ping.great, .ping.good { color: var(--ok); }
+.ping.ok { color: var(--warn); }
+.ping.poor { color: var(--bad); }

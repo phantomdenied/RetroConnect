@@ -16,7 +16,8 @@ const raInstaller = require('./retroarch-installer');
 const tailscaleLib = require('./tailscale');
 const updater = require('./updater');
 const raSetup = require('./retroarch-setup');
-const { fetchCoreFromBuildbot } = require('./sync');
+const { fetchCoreFromBuildbot, HttpError } = require('./sync');
+const netcheck = require('./netcheck');
 const { SyncServer } = require('./server');
 const { HostClient, Syncer, SyncError, compare } = require('./sync');
 
@@ -85,6 +86,9 @@ class Controller extends EventEmitter {
     this.livePads = []; // controllers the window can see right now
     this.padData = { known: [], assign: {} }; // last seen controllers + player assignments
     this.ctrl = null; // driver + per-controller profile status
+    this.connCheck = null; // last connection check result
+    this.testListener = null; // short-lived listener on our netplay port
+    this.compat = null; // "will joining this session work?" summary
   }
 
   // ----- lifecycle -----------------------------------------------------------
@@ -100,6 +104,7 @@ class Controller extends EventEmitter {
   async dispose() {
     clearTimeout(this.pollTimer);
     this.pollTimer = null;
+    if (this.testListener) this.testListener.close();
     if (this.tsLogin && this.tsLogin.child) this.tsLogin.child.kill();
     if (this.hosting && this.hosting.child) this.hosting.child.kill();
     if (this.server) await this.server.stop();
@@ -138,6 +143,9 @@ class Controller extends EventEmitter {
       await server.start();
       server.session = session;
       server.discordUrl = this.cfg.discordUrl;
+      server.versions = { app: this.version, retroarch: this.raVersion };
+      server.onNetplayProbe = () => this.openNetplayProbe();
+      server.onProbeBack = (addr, port) => netcheck.tcpReachable(addr, port);
       this.server = server;
     } catch (err) {
       this.serverError = err.code === 'EADDRINUSE'
@@ -176,6 +184,8 @@ class Controller extends EventEmitter {
       discord: this.discordLink(),
       mySuggestion: this.mySuggestion || null,
       controllers: this.ctrl,
+      connCheck: this.connCheck,
+      compat: this.compat,
       tailscale: {
         ...this.ts,
         canInstall: platforms.osName() === 'windows' || process.env.RETROCONNECT_ALLOW_TS_INSTALL === '1',
@@ -252,8 +262,9 @@ class Controller extends EventEmitter {
         status: 'online',
         nickname: m.nickname || 'Buddy',
         platform: m.platform,
-        retroarchVersion: m.retroarch_version,
         romCount: m.roms.length,
+        appVersion: status.app_version || null,
+        retroarchVersion: status.retroarch_version || m.retroarch_version,
         session,
         suggestion: sug,
         discordUrl: config.isDiscordUrl(status.discord_url) ? status.discord_url : null,
@@ -261,6 +272,13 @@ class Controller extends EventEmitter {
       if (sug && !(before.suggestion && before.suggestion.id === sug.id)) {
         this.emit('suggestion', sug);
         this.log(`${sug.from} suggests playing ${sug.rom.path}`);
+      }
+      if (session && !(this.compat && this.compat.startedAt === session.started_at)) {
+        this.compat = await this.joinCompat(session);
+        this.emitState();
+      } else if (!session && this.compat) {
+        this.compat = null;
+        this.emitState();
       }
       if (session && !(before.session && before.session.started_at === session.started_at)) {
         this.emit('invite', session);
@@ -296,6 +314,98 @@ class Controller extends EventEmitter {
       };
     });
     return { rows, cores: local.cores, buddyOnline: Boolean(this.buddyManifest), romsDir: this.cfg.romsDir };
+  }
+
+  // ----- connection check & compatibility -------------------------------------
+
+  /** Buddy asked to test our netplay port: listen on it briefly (RetroArch does while hosting). */
+  async openNetplayProbe() {
+    const port = this.cfg.netplayPort;
+    if (this.hosting) return { listening: true, port, hosting: true };
+    if (this.testListener) this.testListener.close();
+    const l = await netcheck.openTestListener(port);
+    this.testListener = l.listening ? l : null;
+    return l.listening ? { listening: true, port } : { listening: false, port, error: l.error };
+  }
+
+  /**
+   * Ping + both directions of the netplay port:
+   *  toBuddy:   can you connect to their netplay port (needed when they host)?
+   *  fromBuddy: can they connect to yours (needed when you host)?
+   */
+  async checkConnection() {
+    if (this.connCheck && this.connCheck.running) throw new Error('Already checking');
+    const client = this.client();
+    this.connCheck = { running: true };
+    this.emitState();
+    const result = { running: false, at: Date.now(), relay: this.cfg.connectionMode === 'relay' };
+    const oldVersion = 'Ask your buddy to update RetroConnect to test this.';
+    try {
+      result.ping = await netcheck.measurePing(client);
+      if (!result.relay) {
+        // You -> buddy
+        try {
+          const probe = await client.getJson('/api/netplay-probe');
+          result.toBuddy = probe.listening
+            ? await netcheck.tcpReachable(this.cfg.peerAddress, probe.port || this.cfg.netplayPort)
+            : { reachable: false, error: `their side couldn't listen: ${probe.error}` };
+          result.toBuddy.port = probe.port;
+        } catch (err) {
+          result.toBuddy = { reachable: false, error: err instanceof HttpError && err.status === 404 ? oldVersion : err.message };
+        }
+        // Buddy -> you
+        let mine = null;
+        if (!this.hosting) {
+          mine = await netcheck.openTestListener(this.cfg.netplayPort);
+          if (!mine.listening) result.fromBuddy = { reachable: false, error: `couldn't listen here: ${mine.error}` };
+        }
+        if (!result.fromBuddy) {
+          try {
+            result.fromBuddy = await client.getJson(`/api/probe-back?port=${this.cfg.netplayPort}`);
+          } catch (err) {
+            result.fromBuddy = { reachable: false, error: err instanceof HttpError && err.status === 404 ? oldVersion : err.message };
+          }
+        }
+        if (mine && mine.close) mine.close();
+        result.fromBuddy.port = this.cfg.netplayPort;
+      }
+      const p = result.ping;
+      this.log(`Connection check: ${p.median} ms ping (${p.quality})${result.relay ? '' : `; join them: ${result.toBuddy.reachable ? 'ok' : 'blocked'}; they join you: ${result.fromBuddy.reachable ? 'ok' : 'blocked'}`}`);
+    } catch (err) {
+      result.error = err.message;
+    }
+    this.connCheck = result;
+    this.emitState();
+    if (result.error) throw new Error(result.error);
+    return result;
+  }
+
+  /** Before joining: RetroArch/core/app versions on both sides. */
+  async joinCompat(session) {
+    const out = { startedAt: session.started_at, warnings: [] };
+    const mine = this.raVersion;
+    const theirs = session.retroarch_version;
+    out.retroarch = { mine, theirs, match: !mine || !theirs || mine === theirs };
+    if (!out.retroarch.match) {
+      out.warnings.push({
+        kind: 'retroarch',
+        text: `Different RetroArch versions: ${session.host_nickname} has ${theirs}, you have ${mine}. Matching versions avoids desyncs.`,
+        fix: platforms.osName() === 'windows' || process.env.RETROCONNECT_ALLOW_RA_INSTALL === '1' ? { action: 'match-retroarch', version: theirs } : null,
+      });
+    }
+    try {
+      if (session.platform === this.library.platformTag && session.core) {
+        const local = await this.library.findCore(session.core.name);
+        if (local && local.sha256 !== session.core.sha256) {
+          out.warnings.push({ kind: 'core', text: `Your ${session.core.name.replace(/_libretro$/, '')} differs from theirs. Joining swaps in their copy (yours is kept as .old).` });
+        }
+      }
+    } catch { /* core check is best-effort */ }
+    const app = this.buddy && this.buddy.appVersion;
+    if (app && app !== this.version) {
+      out.warnings.push({ kind: 'app', text: `${session.host_nickname} is on RetroConnect ${app}, you're on ${this.version}. Newer features may only work once you both update.` });
+    }
+    return out;
   }
 
   // ----- controllers ----------------------------------------------------------
@@ -622,14 +732,17 @@ class Controller extends EventEmitter {
     return this.raLatest;
   }
 
-  async installRetroArch() {
+  /** Install the latest stable RetroArch, or a specific version (e.g. to match your buddy). */
+  async installRetroArch(version = null) {
     if (this.hosting || this.playing) throw new Error('Close RetroArch (finish your game) before installing');
+    if (version && !/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Not a RetroArch version number');
+    const release = version ? { version, url: raInstaller.archiveUrl(version) } : this.raLatest;
     return this.withBusy('Installing RetroArch', async () => {
       let result;
       try {
         result = await this.installer.install({
           installDir: this.retroarchDir,
-          release: this.raLatest,
+          release,
           onProgress: (p) => this.progress(p),
           log: (m) => this.log(m),
         });
@@ -645,6 +758,7 @@ class Controller extends EventEmitter {
       // cores are then found next to retroarch.exe automatically.
       this.cfg = config.save(this.configFile, { ...this.cfg, retroarchCommand: [result.exe] });
       await this.applyConfig();
+      this.compat = null; // re-check version warnings against the new RetroArch
       this.log(`RetroArch ${result.version} is ready. Get cores from RetroArch → Online Updater → Core Downloader.`);
       return result;
     });
@@ -682,6 +796,7 @@ class Controller extends EventEmitter {
     if (!this.cfg.sharedSecret) throw new Error('Set up a shared secret first (Settings)');
 
     this.clearSuggestion(); // you're playing now; no need to keep suggesting
+    if (this.testListener) { this.testListener.close(); this.testListener = null; } // free the netplay port for RetroArch
     this.hosting = { rom, core, child: null };
     if (!this.server) await this.restartServer();
     if (!this.server) {

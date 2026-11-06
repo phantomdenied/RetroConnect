@@ -68,7 +68,8 @@ function wireIpc() {
   handle('join', () => controller.join());
   handle('sync', (shas) => controller.syncGames(shas || null));
   handle('retroarch:latest', () => controller.checkRetroArchLatest());
-  handle('retroarch:install', () => controller.installRetroArch());
+  handle('retroarch:install', (version) => controller.installRetroArch(version || null));
+  handle('conn:check', () => controller.checkConnection());
   handle('suggest', (sha) => controller.suggest(sha));
   handle('suggest:clear', () => controller.clearSuggestion());
   handle('update:check', () => controller.checkForUpdates());

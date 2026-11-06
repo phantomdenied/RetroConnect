@@ -163,7 +163,10 @@ function renderBanner() {
         h('div', { class: 'muted small' },
           b.status === 'online'
             ? `${b.nickname} has been notified. Their app will download anything they're missing, then connect.`
-            : `Waiting for your buddy to open RetroConnect and click Join.`)),
+            : `Waiting for your buddy to open RetroConnect and click Join.`),
+        b.status === 'online' && b.retroarchVersion && S.retroarch.version && b.retroarchVersion !== S.retroarch.version
+          ? h('div', { class: 'warn-text small' }, `⚠ ${b.nickname} has RetroArch ${b.retroarchVersion}, you have ${S.retroarch.version}. Ask them to click "Match" on their invite to avoid desyncs.`)
+          : null),
       h('button', { class: 'btn danger', onclick: () => act(() => rc.stopHosting()) }, 'Stop hosting'));
   } else if (S.playing) {
     node = h('div', { class: 'banner hosting' },
@@ -179,7 +182,8 @@ function renderBanner() {
         h('div', { class: 'big' }, `${s.host_nickname} is hosting ${gameTitle(s.rom.path)}`,
           s.host_player ? h('span', { class: 'player-tag' }, `You'll be Player ${3 - Number(s.host_player)}`) : null),
         h('div', { class: 'muted small' },
-          `${s.core.name.replace(/_libretro$/, '')} · ${fmtBytes(s.rom.size)}. Anything you're missing is downloaded first.`)),
+          `${s.core.name.replace(/_libretro$/, '')} · ${fmtBytes(s.rom.size)}. Anything you're missing is downloaded first.`),
+        compatNotes()),
       h('button', {
         class: 'btn primary', disabled: Boolean(S.busy),
         onclick: () => act(async () => { await rc.join(); await loadLibrary(); }, { success: 'Starting RetroArch…' }),
@@ -538,7 +542,57 @@ function renderConnect() {
             ? `On, port ${S.server.port}`
             : (S.server.error ? h('span', { style: 'color:var(--bad)' }, S.server.error) : 'Off')),
           h('dt', {}, 'Your system'), h('dd', {}, S.platform)))),
+    connectionCheckCard(),
     discordCard());
+}
+
+function compatNotes() {
+  const c = S.compat;
+  if (!c || !c.warnings.length) return null;
+  return h('div', { class: 'compat' }, c.warnings.map((w) => h('div', { class: 'warn-text small' }, `⚠ ${w.text} `,
+    w.fix && w.fix.action === 'match-retroarch' ? h('button', {
+      class: 'btn small', disabled: Boolean(S.busy),
+      onclick: () => act(() => rc.installRetroArch(w.fix.version), { success: `RetroArch ${w.fix.version} installed. Now hit Join.` }),
+    }, `Match their RetroArch (${w.fix.version})`) : null)));
+}
+
+function connectionCheckCard() {
+  const r = S.connCheck;
+  const b = S.buddy || {};
+  const who = b.nickname || 'your buddy';
+  const online = b.status === 'online';
+  const fixHint = (dir) => {
+    if (S.config.connectionMode === 'tailscale') return 'Check Tailscale is connected on both PCs and that Windows Firewall allows RetroArch.';
+    return dir === 'from'
+      ? `Forward TCP ${S.config.netplayPort} to this PC on your router, and allow RetroArch in Windows Firewall. Or switch to Tailscale.`
+      : `${who} needs to forward TCP ${S.config.netplayPort} to their PC and allow RetroArch in Windows Firewall. Or you both switch to Tailscale.`;
+  };
+  const line = (ok, title, detail) => h('div', { class: 'check-line' },
+    h('span', { class: ok ? 'ok-text' : 'bad-text' }, ok ? '✓' : '✗'),
+    h('div', {}, h('b', {}, title), detail ? h('div', { class: 'muted small' }, detail) : null));
+  let body = h('p', { class: 'muted small', style: 'margin:0' }, `Measures the lag to ${who} and tests both directions of the netplay port (${S.config.netplayPort}), so you know a game will connect before you start one.`);
+  if (r && r.running) body = h('div', { class: 'pad-waiting', style: 'margin:0' }, h('span', { class: 'pulse' }), 'Checking… (about 5 seconds)');
+  else if (r && r.error) body = h('div', { class: 'bad-text' }, r.error);
+  else if (r && r.ping) {
+    const p = r.ping;
+    body = h('div', { class: 'checks' },
+      h('div', { class: 'check-line' }, h('span', { class: `ping ${p.quality}` }, `${p.median} ms`),
+        h('div', {}, h('b', {}, `Lag: ${{ great: 'great', good: 'good', ok: 'playable', poor: 'high, expect some stutter' }[p.quality]}`),
+          h('div', { class: 'muted small' }, `round trip, varies by ${p.jitter} ms`))),
+      r.relay
+        ? h('div', { class: 'muted small' }, 'Relay mode: gameplay goes through libretro\'s relay server, so no ports need to be open.')
+        : [
+          line(r.toBuddy.reachable, `You can join ${who}'s games`, r.toBuddy.reachable ? null : `${r.toBuddy.error}. ${fixHint('to')}`),
+          line(r.fromBuddy.reachable, `${who} can join your games`, r.fromBuddy.reachable ? null : `${r.fromBuddy.error}. ${fixHint('from')}`),
+          h('div', { class: 'muted small' }, 'RetroArch itself asks Windows Firewall for permission the first time it hosts. Click Allow.'),
+        ],
+      h('div', { class: 'muted small' }, `Checked ${new Date(r.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`));
+  }
+  return h('div', { class: 'card', style: 'margin-top:16px' },
+    h('div', { class: 'row' }, h('h2', { style: 'margin:0;flex:1' }, 'Connection check'),
+      h('button', { class: 'btn', disabled: !online || (r && r.running) || Boolean(S.hosting || S.playing), onclick: () => act(() => rc.checkConnection()) },
+        r && r.at ? 'Check again' : 'Check connection')),
+    h('div', { style: 'margin-top:10px' }, online ? body : h('p', { class: 'muted small', style: 'margin:0' }, `Connect to ${who} first.`)));
 }
 
 function discordCard() {

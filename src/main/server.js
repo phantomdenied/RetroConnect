@@ -5,7 +5,9 @@
 // Endpoints (all require `Authorization: Bearer <sharedSecret>`):
 //   GET /api/manifest          ROM + core library
 //   GET /api/session           what's being hosted right now (404 if idle)
-//   GET /api/status            { session, suggestion, discord_url } in one poll
+//   GET /api/status            { session, suggestion, discord_url, versions } in one poll
+//   GET /api/netplay-probe     open a short-lived listener on our netplay port
+//   GET /api/probe-back?port=N try to reach the caller's netplay port
 //   GET /files/rom/<sha256>    a ROM, by content hash
 //   GET /files/core/<sha256>   a core, by content hash
 //
@@ -30,6 +32,10 @@ class SyncServer {
     this.session = null;
     this.suggestion = null; // { id, rom, from, at }: "let's play this"
     this.discordUrl = '';
+    this.versions = {}; // { app, retroarch }
+    // Hooks the controller supplies for the connection check.
+    this.onNetplayProbe = null; // () => Promise<{ listening, port, error? }>
+    this.onProbeBack = null; // (address, port) => Promise<{ reachable, error? }>
     this.index = null; // Map "kind:sha" -> absolute path
     this.server = http.createServer((req, res) => {
       this.handle(req, res).catch((err) => {
@@ -98,7 +104,19 @@ class SyncServer {
         session: this.session,
         suggestion: this.suggestion,
         discord_url: this.discordUrl || null,
+        app_version: this.versions.app || null,
+        retroarch_version: this.versions.retroarch || null,
       });
+    }
+    if (url === '/api/netplay-probe' && this.onNetplayProbe) {
+      return this.json(res, 200, await this.onNetplayProbe());
+    }
+    if (url === '/api/probe-back' && this.onProbeBack) {
+      const port = Number(new URL(req.url, 'http://x').searchParams.get('port'));
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return this.json(res, 400, { error: 'bad port' });
+      // Only ever dials back the address that asked, never anywhere else.
+      const addr = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+      return this.json(res, 200, await this.onProbeBack(addr, port));
     }
     if (url === '/api/session') {
       return this.session
