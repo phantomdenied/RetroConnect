@@ -916,7 +916,7 @@ function updatesCard(d) {
   if (!S.updateFeed && !d.updateFeedUrl) status = h('span', { class: 'muted' }, 'Not set up yet. Paste the update link from whoever publishes RetroConnect.');
   else if (u && u.checking) status = h('span', { class: 'muted' }, 'Checking…');
   else if (u && u.error) status = h('span', { style: 'color:var(--bad)' }, u.error);
-  else if (u && u.available) status = h('span', {}, h('b', {}, `Version ${u.latest} is available. `), h('button', { class: 'link-btn', onclick: () => act(() => rc.openUrl(u.url)) }, 'Download'));
+  else if (u && u.available) status = h('span', {}, h('b', {}, `Version ${u.latest} is available. `), h('button', { class: 'btn small primary', onclick: () => act(() => rc.openUrl(u.url)) }, 'Download update'));
   else if (u && u.configured) status = h('span', { class: 'ok-text' }, `✓ You're up to date (checked ${new Date(u.checkedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`);
   return h('div', { class: 'card', style: 'margin-top:16px' },
     h('h2', {}, 'App updates'),
@@ -926,7 +926,7 @@ function updatesCard(d) {
       status),
     h('div', { class: 'field', style: 'margin-top:12px;margin-bottom:0' }, h('label', {}, 'Update link'),
       h('input', { type: 'text', value: d.updateFeedUrl, placeholder: S.updateFeed && !d.updateFeedUrl ? `Built in: ${S.updateFeed}` : 'https://gist.githubusercontent.com/…/raw/retroconnect.json', oninput: (e) => { d.updateFeedUrl = e.target.value.trim(); } }),
-      h('div', { class: 'hint' }, 'A public file that says which version is newest and where to download it. Save settings after changing it.')));
+      h('div', { class: 'hint' }, 'Leave empty to get updates from GitHub Releases. Only fill this in to use a different update file. Save settings after changing it.')));
 }
 
 // ----- RetroArch setup page --------------------------------------------------

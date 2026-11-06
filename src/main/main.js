@@ -161,6 +161,7 @@ app.whenReady().then(async () => {
     dataDir,
     version: app.getVersion(),
     updateFeedDefault: (require('../../package.json').retroconnect || {}).updateFeedUrl || '',
+    githubRepo: (require('../../package.json').retroconnect || {}).githubRepo || '',
     // Store covers small: 160 px wide is plenty for the game list.
     resizeImage: async (buf) => {
       const img = nativeImage.createFromBuffer(buf);

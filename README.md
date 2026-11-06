@@ -204,37 +204,36 @@ Building on Linux/macOS needs Wine installed.
 
 ## Publishing an update
 
-The repo is private, so the app can't read its GitHub Releases. Instead, both
-apps check a small **public update file** you control, and show a
-**Download update** banner when it lists a newer version.
-
-**One-time setup:**
-1. Go to <https://gist.github.com>, create a **public** gist named
-   `retroconnect.json` with `{}` in it, and save.
-2. Click **Raw** and copy the link, then remove the long code between `/raw/`
-   and the file name. You want
-   `https://gist.githubusercontent.com/<you>/<gist-id>/raw/retroconnect.json`.
-   (With the code left in, the link would always show that one old version.)
-3. Paste it into **Settings → App updates → Update link** on both PCs and save.
-   To build it into future installers instead, put it in `package.json` under
-   `"retroconnect": { "updateFeedUrl": "…" }`.
+The app checks this repo's **GitHub Releases** (`phantomdenied/RetroConnect`,
+set in `package.json` under `"retroconnect": { "githubRepo": … }`). When
+a newer release exists it shows a **Download update** banner, and the button
+downloads that release's `-win-setup.exe`. The repo has to be **public** for
+this, because the app checks without signing in to GitHub.
 
 **Each release:**
-1. Bump `"version"` in `package.json` (e.g. `0.5.0` → `0.5.1`) and push.
-2. Build the installer: `npm run dist`, or on GitHub open *Actions → Build
-   Windows installer → Run workflow*, then download `RetroConnect-windows`
-   from the run page. Pushing a tag `v0.5.1` also attaches it to a (private)
-   GitHub Release.
-3. Upload `RetroConnect-x.y.z-win-setup.exe` somewhere your buddy can
-   download it (Google Drive, Dropbox, Discord, …) and copy the link.
-4. Generate the update file and paste it into the gist:
+1. Bump `"version"` in `package.json` (e.g. `0.7.1` → `0.7.2`), commit, and
+   push to `main`.
+2. Tag it and push the tag:
 
    ```sh
-   npm run update-feed -- "https://your-download-link" "What changed"
+   git tag v0.7.2
+   git push origin v0.7.2
    ```
 
-Both apps check at startup and every 6 hours (or click **Check for updates**).
-Running the new installer upgrades in place and keeps all settings.
+   The *Build Windows installer* workflow builds the installer and publishes
+   a GitHub Release for the tag with both `.exe` files attached. It takes a
+   few minutes. The tag must match the version in `package.json`.
+3. Optional: edit the release on GitHub to write what changed. That text
+   shows up in the update banner.
+
+Both apps check at startup and every 6 hours (or click **Settings → App
+updates → Check for updates**). Running the new installer upgrades in place
+and keeps all settings.
+
+**Other update file:** to announce updates from somewhere else instead, paste
+a link to a public JSON file into **Settings → App updates → Update link**
+(`npm run update-feed -- "https://download-link" "What changed"` prints one).
+Leave it empty to use GitHub Releases.
 
 ## How it works
 

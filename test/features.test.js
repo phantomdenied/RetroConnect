@@ -51,6 +51,31 @@ test('controller: update banner state, built-in feed overridden by settings', as
   await assert.rejects(c.saveSettings({ updateFeedUrl: 'http://nope' }), /https/);
 });
 
+test('update check: GitHub Releases', async () => {
+  const seen = [];
+  const rel = (tag, assets) => async (url, opts) => { seen.push({ url, opts }); return { ok: true, status: 200, text: async () => JSON.stringify({ tag_name: tag, html_url: 'https://github.com/o/r/releases/tag/' + tag, body: 'Notes here', assets }) }; };
+  const assets = [
+    { name: 'RetroConnect-0.8.0-win-portable.exe', browser_download_url: 'https://github.com/o/r/releases/download/v0.8.0/RetroConnect-0.8.0-win-portable.exe' },
+    { name: 'RetroConnect-0.8.0-win-setup.exe', browser_download_url: 'https://github.com/o/r/releases/download/v0.8.0/RetroConnect-0.8.0-win-setup.exe' },
+  ];
+  const r = await updater.checkForUpdate({ githubRepo: 'o/r', currentVersion: '0.7.1', fetchImpl: rel('v0.8.0', assets) });
+  assert.equal(seen[0].url, 'https://api.github.com/repos/o/r/releases/latest');
+  assert.equal(seen[0].opts.headers['User-Agent'], 'RetroConnect');
+  assert.equal(r.available, true);
+  assert.equal(r.latest, '0.8.0');
+  assert.match(r.url, /win-setup\.exe$/);
+  assert.equal(r.notes, 'Notes here');
+  // No installer attached: fall back to the release page.
+  assert.equal((await updater.checkForUpdate({ githubRepo: 'o/r', currentVersion: '0.7.1', fetchImpl: rel('v0.8.0', []) })).url, 'https://github.com/o/r/releases/tag/v0.8.0');
+  assert.equal((await updater.checkForUpdate({ githubRepo: 'o/r', currentVersion: '0.8.0', fetchImpl: rel('v0.8.0', assets) })).available, false);
+  // A custom link wins over the repo.
+  seen.length = 0;
+  await updater.checkForUpdate({ feedUrl: 'https://x.example/f.json', githubRepo: 'o/r', currentVersion: '0.7.1', fetchImpl: rel('v0.8.0', assets) });
+  assert.match(seen[0].url, /^https:\/\/x\.example\/f\.json\?t=/);
+  await assert.rejects(updater.checkForUpdate({ githubRepo: 'o/r', currentVersion: '0.7.1', fetchImpl: jsonFetch({}, 404) }), /no releases published yet/);
+  assert.deepEqual(await updater.checkForUpdate({ githubRepo: 'not a repo', currentVersion: '0.7.1' }), { configured: false });
+});
+
 // ----- controllers ------------------------------------------------------------
 
 test('controller classification from Gamepad ids', () => {

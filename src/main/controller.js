@@ -75,7 +75,7 @@ class Controller extends EventEmitter {
     dataDir, version = '0', pollMs = POLL_MS, launch = launcher.run, fetchCore,
     retroarchDir = path.join(dataDir, 'RetroArch'), installer = raInstaller,
     tailscale = tailscaleLib,
-    updateFeedDefault = '', fetchImpl = globalThis.fetch, resizeImage = null,
+    updateFeedDefault = '', githubRepo = '', fetchImpl = globalThis.fetch, resizeImage = null,
     netplaySend = netplayControl.sendCommand,
   } = {}) {
     super();
@@ -109,6 +109,7 @@ class Controller extends EventEmitter {
     this.tsLatest = null;
     this.tick = 0;
     this.updateFeedDefault = updateFeedDefault;
+    this.githubRepo = githubRepo;
     this.fetchImpl = fetchImpl;
     this.update = null; // result of the last update check
     this.suggestionSeq = 0;
@@ -940,15 +941,19 @@ class Controller extends EventEmitter {
 
   // ----- app updates ----------------------------------------------------------
 
+  // Where updates come from: a custom link from Settings, else the built-in
+  // link, else the repo's GitHub Releases. Returns a label for the UI.
   updateFeed() {
-    return this.cfg.updateFeedUrl || this.updateFeedDefault || '';
+    const url = this.cfg.updateFeedUrl || this.updateFeedDefault || '';
+    if (url) return url;
+    return updater.isGithubRepo(this.githubRepo) ? `github.com/${this.githubRepo}/releases` : '';
   }
 
   async checkForUpdates() {
     this.update = { ...(this.update || {}), checking: true };
     this.emitState();
     try {
-      this.update = await updater.checkForUpdate({ feedUrl: this.updateFeed(), currentVersion: this.version, fetchImpl: this.fetchImpl });
+      this.update = await updater.checkForUpdate({ feedUrl: this.cfg.updateFeedUrl || this.updateFeedDefault || '', githubRepo: this.githubRepo, currentVersion: this.version, fetchImpl: this.fetchImpl });
       if (this.update.available) this.log(`RetroConnect ${this.update.latest} is available`);
     } catch (err) {
       this.update = { configured: true, error: err.message, checkedAt: Date.now() };

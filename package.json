@@ -58,6 +58,7 @@
   },
   "homepage": "https://github.com/phantomdenied/RetroConnect",
   "retroconnect": {
+    "githubRepo": "phantomdenied/RetroConnect",
     "updateFeedUrl": ""
   }
 }
