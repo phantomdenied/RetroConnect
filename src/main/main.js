@@ -1,7 +1,11 @@
 'use strict';
 // Electron entry point: window, IPC wiring, notifications.
 
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Notification, protocol, nativeImage } = require('electron');
+const fs = require('fs');
+
+// rcthumb://cover/<rom sha> serves cached box art to the window.
+protocol.registerSchemesAsPrivileged([{ scheme: 'rcthumb', privileges: { standard: true, secure: true } }]);
 const path = require('path');
 const { Controller } = require('./controller');
 const config = require('./config');
@@ -71,6 +75,7 @@ function wireIpc() {
   handle('retroarch:install', (version) => controller.installRetroArch(version || null));
   handle('conn:check', () => controller.checkConnection());
   handle('suggest', (sha) => controller.suggest(sha));
+  handle('favorite', (sha) => controller.toggleFavorite(String(sha)));
   handle('suggest:clear', () => controller.clearSuggestion());
   handle('update:check', () => controller.checkForUpdates());
   handle('ra-setup:info', () => controller.retroarchSetupInfo());
@@ -119,6 +124,11 @@ function wireController() {
       send('progress', p);
     }
   });
+  let thumbTimer = null;
+  controller.on('thumb', () => {
+    clearTimeout(thumbTimer); // covers arrive in bursts: refresh the list once
+    thumbTimer = setTimeout(() => send('thumbs'), 400);
+  });
   controller.on('suggestion', (sug) => {
     send('suggestion', sug);
     if (Notification.isSupported() && !(win && win.isFocused())) {
@@ -146,6 +156,12 @@ app.whenReady().then(async () => {
     dataDir,
     version: app.getVersion(),
     updateFeedDefault: (require('../../package.json').retroconnect || {}).updateFeedUrl || '',
+    // Store covers small: 160 px wide is plenty for the game list.
+    resizeImage: async (buf) => {
+      const img = nativeImage.createFromBuffer(buf);
+      if (img.isEmpty()) throw new Error('not an image');
+      return img.getSize().width > 160 ? img.resize({ width: 160, quality: 'good' }).toPNG() : buf;
+    },
     // Big, machine-specific files belong in Local AppData, not the roaming profile.
     retroarchDir: process.env.LOCALAPPDATA && !process.env.RETROCONNECT_HOME
       ? path.join(process.env.LOCALAPPDATA, 'RetroConnect', 'RetroArch')
@@ -154,6 +170,12 @@ app.whenReady().then(async () => {
   wireIpc();
   wireController();
   await controller.init();
+  protocol.handle('rcthumb', async (req) => {
+    const sha = new URL(req.url).pathname.replace(/^\//, '');
+    const file = controller.thumbFile(sha);
+    if (!file) return new Response('', { status: 404 });
+    return new Response(await fs.promises.readFile(file), { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'max-age=86400' } });
+  });
   createWindow();
   // Quietly look for a new version shortly after start, then every 6 hours.
   const check = () => { if (controller.updateFeed()) controller.checkForUpdates().catch(() => {}); };

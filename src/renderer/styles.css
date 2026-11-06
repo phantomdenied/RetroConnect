@@ -265,3 +265,10 @@ table.cores td:first-child { width: 70px; font-family: var(--mono); color: var(-
 .ping.great, .ping.good { color: var(--ok); }
 .ping.ok { color: var(--warn); }
 .ping.poor { color: var(--bad); }
+
+.cover { width: 44px; height: 56px; object-fit: contain; border-radius: 4px; background: var(--panel-2); }
+.game { grid-template-columns: 44px 1fr auto auto; }
+.star { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 16px; padding: 0 6px 0 0; line-height: 1; vertical-align: -1px; }
+.star:hover { color: var(--warn); }
+.star.on { color: var(--warn); }
+.pick-card .cover { width: 56px; height: 72px; }

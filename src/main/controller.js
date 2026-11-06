@@ -19,6 +19,7 @@ const raSetup = require('./retroarch-setup');
 const { fetchCoreFromBuildbot, HttpError } = require('./sync');
 const netcheck = require('./netcheck');
 const savesLib = require('./saves');
+const { ThumbCache } = require('./thumbnails');
 const { backupExisting } = require('./sync');
 const { SyncServer } = require('./server');
 const { HostClient, Syncer, SyncError, compare } = require('./sync');
@@ -50,7 +51,7 @@ class Controller extends EventEmitter {
     dataDir, version = '0', pollMs = POLL_MS, launch = launcher.run, fetchCore,
     retroarchDir = path.join(dataDir, 'RetroArch'), installer = raInstaller,
     tailscale = tailscaleLib,
-    updateFeedDefault = '', fetchImpl = globalThis.fetch,
+    updateFeedDefault = '', fetchImpl = globalThis.fetch, resizeImage = null,
   } = {}) {
     super();
     this.dataDir = dataDir;
@@ -92,6 +93,9 @@ class Controller extends EventEmitter {
     this.testListener = null; // short-lived listener on our netplay port
     this.compat = null; // "will joining this session work?" summary
     this.rtt = []; // recent round-trip times to the buddy (ms), from polling
+    this.thumbs = new ThumbCache(path.join(dataDir, 'thumbs'), { fetchImpl, resize: resizeImage });
+    this.historyFile = path.join(dataDir, 'history.json');
+    this.history = { favorites: [], plays: [] };
   }
 
   // ----- lifecycle -----------------------------------------------------------
@@ -99,6 +103,7 @@ class Controller extends EventEmitter {
   async init() {
     this.cfg = config.load(this.configFile);
     try { this.padData = { known: [], assign: {}, ...JSON.parse(require('fs').readFileSync(this.padsFile, 'utf8')) }; } catch { /* first run */ }
+    try { this.history = { favorites: [], plays: [], ...JSON.parse(require('fs').readFileSync(this.historyFile, 'utf8')) }; } catch { /* first run */ }
     await this.applyConfig();
     this.startPolling();
     return this.state();
@@ -259,8 +264,12 @@ class Controller extends EventEmitter {
       }
       const t0 = Date.now();
       const status = await client.status();
+      const lagBefore = JSON.stringify(this.lagInfo());
       this.rtt.push(Date.now() - t0);
       if (this.rtt.length > 10) this.rtt.shift();
+      const lagAfter = this.lagInfo();
+      // Tell the window when the recommendation changes (not on every ms of ping).
+      if (JSON.stringify({ ...lagAfter, ping: null }) !== JSON.stringify({ ...JSON.parse(lagBefore), ping: null })) this.emitState();
       const session = status.session || null;
       // Only trust well-formed suggestions and real Discord links from the network.
       const sug = status.suggestion && status.suggestion.rom && typeof status.suggestion.rom.sha256 === 'string'
@@ -313,16 +322,80 @@ class Controller extends EventEmitter {
       this.buddyManifestAt = 0;
       await this.pollBuddy();
     }
+    const favs = new Set(this.history.favorites);
+    const stats = this.playStats();
     const rows = compare(local, this.buddyManifest).map((row) => {
       const ext = path.extname(row.path);
       const coreName = config.coreForExtension(this.cfg, ext);
+      const sha = (row.mine || row.theirs).sha256;
+      const st = stats.get(sha);
       return {
         ...row,
+        sha,
         coreName,
         coreInstalled: Boolean(coreName && local.cores.some((c) => c.name === coreName)),
+        thumb: this.cfg.showBoxArt && this.thumbs.has(sha),
+        favorite: favs.has(sha),
+        lastPlayed: st ? st.last : null,
+        playCount: st ? st.count : 0,
+        minutesPlayed: st ? st.minutes : 0,
       };
     });
+    if (this.cfg.showBoxArt) {
+      // Fetch missing covers in the background; the window refreshes as they arrive.
+      for (const r of rows) {
+        if (!r.thumb) this.thumbs.ensure(r.sha, r.path).then((ok) => { if (ok) this.emit('thumb', r.sha); });
+      }
+    }
     return { rows, cores: local.cores, buddyOnline: Boolean(this.buddyManifest), romsDir: this.cfg.romsDir };
+  }
+
+  thumbFile(sha) {
+    return /^[0-9a-f]{64}$/.test(sha) && this.thumbs.has(sha) ? this.thumbs.file(sha) : null;
+  }
+
+  // ----- favorites & play history ---------------------------------------------
+
+  saveHistory() {
+    try {
+      require('fs').mkdirSync(this.dataDir, { recursive: true });
+      require('fs').writeFileSync(this.historyFile, JSON.stringify(this.history));
+    } catch (err) {
+      this.log(`Couldn't save play history: ${err.message}`, 'warn');
+    }
+  }
+
+  toggleFavorite(sha) {
+    const favs = new Set(this.history.favorites);
+    if (favs.has(sha)) favs.delete(sha); else favs.add(sha);
+    this.history.favorites = [...favs];
+    this.saveHistory();
+    return favs.has(sha);
+  }
+
+  startPlay(rom, role, withWhom) {
+    const entry = { sha: rom.sha256, path: rom.path, role, with: withWhom || null, at: Date.now(), minutes: 0 };
+    this.history.plays.push(entry);
+    if (this.history.plays.length > 500) this.history.plays.splice(0, this.history.plays.length - 500);
+    this.saveHistory();
+    return entry;
+  }
+
+  endPlay(entry) {
+    entry.minutes = Math.max(0, Math.round((Date.now() - entry.at) / 60000));
+    this.saveHistory();
+  }
+
+  playStats() {
+    const m = new Map();
+    for (const p of this.history.plays) {
+      const s = m.get(p.sha) || { last: 0, count: 0, minutes: 0 };
+      s.last = Math.max(s.last, p.at);
+      s.count += 1;
+      s.minutes += p.minutes || 0;
+      m.set(p.sha, s);
+    }
+    return m;
   }
 
   // ----- lag smoothing ----------------------------------------------------------
@@ -927,9 +1000,11 @@ class Controller extends EventEmitter {
       this.log(`Couldn't check your buddy's save: ${err.message}`, 'warn');
     }
     const overrides = await this.launchOverrides(this.cfg.hostPlayer);
+    const play = this.startPlay(rom, 'host', this.buddy.nickname);
     const done = this.launch(this.cfg, 'host', this.library.corePath(core), this.library.romPath(rom), { overrides },
       { onSpawn: (child) => { if (this.hosting) this.hosting.child = child; } });
     done.catch((err) => this.log(err.message, 'error')).finally(async () => {
+      this.endPlay(play);
       if (this.server) this.server.session = null;
       this.hosting = null;
       this.log('Stopped hosting');
@@ -972,10 +1047,11 @@ class Controller extends EventEmitter {
       const hostPlayer = Number(session.host_player);
       const slot = hostPlayer === 1 ? 2 : hostPlayer === 2 ? 1 : null;
       const overrides = await this.launchOverrides(slot);
+      const play = this.startPlay(session.rom, 'guest', session.host_nickname);
       this.launch(cfg, 'guest', result.corePath, result.romPath,
         { connectTo: this.cfg.peerAddress, port: session.netplay_port, overrides })
         .catch((err) => this.log(err.message, 'error'))
-        .finally(() => { this.playing = null; this.emitState(); });
+        .finally(() => { this.endPlay(play); this.playing = null; this.emitState(); });
       return { warnings: result.warnings, downloaded: result.downloaded };
     });
   }

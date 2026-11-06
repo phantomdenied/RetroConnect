@@ -41,6 +41,7 @@ function defaults() {
     hostPlayer: 1, // when you host: 1 = you're Player 1, 2 = your buddy is
     lagFrames: -1, // netplay input delay frames: -1 = automatic from ping, 0 = off
     shareSaves: true, // pull your buddy's newer battery save before hosting
+    showBoxArt: true, // fetch covers from libretro's thumbnail server
     discordUrl: '', // invite or channel link for the Discord you both hang out in
     updateFeedUrl: '', // public JSON announcing new versions (overrides the built-in one)
   };

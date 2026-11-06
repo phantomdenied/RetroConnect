@@ -45,9 +45,49 @@ const STATUS_TEXT = {
 
 const buddyName = () => (S && S.buddy && S.buddy.nickname) || 'your buddy';
 
+/** "Legend of Zelda, The - A Link to the Past (USA) [!].sfc" -> "The Legend of Zelda - A Link to the Past" */
 function gameTitle(p) {
-  const base = p.split('/').pop();
-  return base.replace(/\.[^.]+$/, '');
+  const base = p.split('/').pop().replace(/\.[^.]+$/, '');
+  let t = base.replace(/\s*[([][^)\]]*[)\]]/g, '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+  t = t.replace(/^(.+?), (The|A|An)(?=$| - |: )/, '$2 $1');
+  // "contra" -> "Contra" for all-lowercase file names
+  if (t && t === t.toLowerCase()) t = t.replace(/\b([a-z])/g, (c) => c.toUpperCase());
+  return t || base;
+}
+function regionTag(p) {
+  const m = /\(([^)]*(USA|Europe|Japan|World|Korea|Brazil|Australia|Germany|France|Spain|Italy)[^)]*)\)/i.exec(p);
+  return m ? m[1] : null;
+}
+function timeAgo(ms) {
+  const m = Math.round((Date.now() - ms) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const hrs = Math.round(m / 60);
+  if (hrs < 24) return `${hrs} h ago`;
+  const d = Math.round(hrs / 24);
+  return d === 1 ? 'yesterday' : `${d} days ago`;
+}
+function cover(r) {
+  const tile = h('div', { class: 'sys' }, systemOf(r.path));
+  if (!r.thumb) return tile;
+  const img = h('img', { class: 'cover', src: `rcthumb://cover/${r.sha}`, alt: '', loading: 'lazy' });
+  img.addEventListener('error', () => img.replaceWith(tile));
+  return img;
+}
+function starButton(r) {
+  return h('button', {
+    class: `star ${r.favorite ? 'on' : ''}`, title: r.favorite ? 'Remove from favorites' : 'Add to favorites',
+    onclick: (e) => { e.stopPropagation(); act(async () => { await rc.toggleFavorite(r.sha); await loadLibrary(); }); },
+  }, r.favorite ? '★' : '☆');
+}
+function metaLine(r, size, extra = '') {
+  const bits = [];
+  const reg = regionTag(r.path);
+  if (reg) bits.push(reg);
+  bits.push(fmtBytes(size));
+  if (extra) bits.push(extra);
+  if (r.lastPlayed) bits.push(`played ${timeAgo(r.lastPlayed)}${r.playCount > 1 ? ` · ${r.playCount} times` : ''}`);
+  return bits.join(' · ');
 }
 function systemOf(p) {
   const ext = (p.split('.').pop() || '').toLowerCase();
@@ -236,10 +276,10 @@ function renderFriend() {
       h('div', { class: 'chips' }, [['all', 'All'], ['missing', "You don't have"], ['both', 'You both have']].map(([k, label]) =>
         h('button', { class: `chip ${friendFilter === k ? 'active' : ''}`, onclick: () => { friendFilter = k; renderFriend(); } }, label, h('span', { class: 'count' }, counts[k]))))),
     shown.length ? h('div', { class: 'games' }, shown.map((r) => h('div', { class: 'game' },
-      h('div', { class: 'sys' }, systemOf(r.path)),
+      cover(r),
       h('div', { style: 'min-width:0' },
         h('div', { class: 'title', title: r.path }, gameTitle(r.path)),
-        h('div', { class: 'meta' }, `${r.path} · ${fmtBytes(r.theirs.size)}`)),
+        h('div', { class: 'meta', title: r.path }, metaLine(r, r.theirs.size))),
       h('span', { class: `badge ${r.status === 'both' ? 'both' : r.status === 'different' ? 'different' : 'theirs'}` },
         r.status === 'both' ? 'You have it too' : r.status === 'different' ? 'Your copy differs' : "You don't have it"),
       h('div', { class: 'actions' },
@@ -292,7 +332,10 @@ function pickGame() {
   if (!pool.length) return toast('No games yet. Add some ROMs first.', 'error');
   const fresh = pool.filter((r) => !recentPicks.includes(r.path));
   const from = fresh.length ? fresh : pool;
-  pick = from[Math.floor(Math.random() * from.length)];
+  // Favorites are twice as likely; games played in the last 3 days much less.
+  const weight = (r) => (r.favorite ? 2 : 1) * (r.lastPlayed && Date.now() - r.lastPlayed < 3 * 864e5 ? 0.25 : 1);
+  let roll = Math.random() * from.reduce((n, r) => n + weight(r), 0);
+  pick = from.find((r) => (roll -= weight(r)) <= 0) || from[from.length - 1];
   recentPicks.push(pick.path);
   if (recentPicks.length > Math.min(5, pool.length - 1)) recentPicks.shift();
   renderGames();
@@ -303,7 +346,7 @@ function pickCard() {
   const r = rowBySha((pick.mine || pick.theirs).sha256) || pick;
   const buddyOnline = S.buddy.status === 'online';
   return h('div', { class: 'pick-card' },
-    h('div', { class: 'pick-dice' }, '🎲'),
+    r.thumb ? cover(r) : h('div', { class: 'pick-dice' }, '🎲'),
     h('div', { class: 'grow' },
       h('div', { class: 'muted small' }, 'How about…'),
       h('div', { class: 'pick-title' }, gameTitle(r.path)),
@@ -353,13 +396,18 @@ function updateBanner() {
 function filteredRows() {
   if (!lib) return [];
   const q = query.trim().toLowerCase();
-  return lib.rows.filter((r) => {
-    if (q && !r.path.toLowerCase().includes(q)) return false;
+  const rows = lib.rows.filter((r) => {
+    if (q && !r.path.toLowerCase().includes(q) && !gameTitle(r.path).toLowerCase().includes(q)) return false;
+    if (filter === 'fav') return r.favorite;
+    if (filter === 'recent') return Boolean(r.lastPlayed);
     if (filter === 'ready') return r.status === 'both';
     if (filter === 'download') return r.status === 'theirs' || r.status === 'different';
     if (filter === 'mine') return r.status === 'mine' || r.status === 'unknown';
     return true;
   });
+  if (filter === 'recent') rows.sort((a, b) => b.lastPlayed - a.lastPlayed);
+  else rows.sort((a, b) => (b.favorite - a.favorite) || gameTitle(a.path).localeCompare(gameTitle(b.path)));
+  return rows;
 }
 
 function gameRow(r) {
@@ -391,10 +439,10 @@ function gameRow(r) {
   const core = r.coreName ? r.coreName.replace(/_libretro$/, '') : 'no core set';
   const entry = r.mine || r.theirs;
   return h('div', { class: 'game' },
-    h('div', { class: 'sys' }, systemOf(r.path)),
+    cover(r),
     h('div', { style: 'min-width:0' },
-      h('div', { class: 'title', title: r.path }, gameTitle(r.path)),
-      h('div', { class: 'meta' }, `${r.path} · ${fmtBytes(entry.size)} · ${core}${r.mine && !r.coreInstalled && r.coreName ? ' (not installed)' : ''}`)),
+      h('div', { class: 'title', title: r.path }, starButton(r), gameTitle(r.path)),
+      h('div', { class: 'meta', title: r.path }, metaLine(r, entry.size, `${core}${r.mine && !r.coreInstalled && r.coreName ? ' (not installed)' : ''}`))),
     h('span', { class: `badge ${r.status}` }, r.status === 'theirs' ? `${buddyName()} has it` : STATUS_TEXT[r.status]),
     h('div', { class: 'actions' }, actions));
 }
@@ -409,6 +457,8 @@ function renderGames() {
     ['ready', 'Ready to play', count((r) => r.status === 'both')],
     ['download', 'Needs download', needs],
     ['mine', 'Only mine', count((r) => r.status === 'mine' || r.status === 'unknown')],
+    ['fav', '★ Favorites', count((r) => r.favorite)],
+    ['recent', 'Recently played', count((r) => r.lastPlayed)],
   ];
   const search = h('input', {
     type: 'search', placeholder: 'Search games', value: query,
@@ -659,6 +709,9 @@ function renderSettings() {
           h('div', { class: 'field', style: 'flex:1' }, h('label', {}, 'Sync port'),
             h('input', { type: 'number', value: d.syncPort, oninput: bind('syncPort', Number) }))),
         lagField(d),
+        h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: d.showBoxArt, onchange: bind('showBoxArt') }),
+          h('div', {}, h('div', {}, h('b', {}, 'Show box art')),
+            h('div', { class: 'muted small' }, 'Covers come from libretro\'s thumbnail server (the one RetroArch uses), looked up by game name, and are stored on this PC.'))),
         h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: d.shareSaves, onchange: bind('shareSaves') }),
           h('div', {}, h('div', {}, h('b', {}, 'Share game saves')),
             h('div', { class: 'muted small' }, `When you host, RetroConnect grabs ${buddyName()}'s save for that game if it's newer, so co-op progress carries over. Yours is kept as a backup.`))),
@@ -1141,6 +1194,7 @@ async function boot() {
   rc.onLog(addLog);
   rc.onProgress(showProgress);
   rc.onInvite((s) => toast(`${s.host_nickname} is hosting ${gameTitle(s.rom.path)}. Click Join!`));
+  rc.onThumbs(() => loadLibrary().catch(() => {}));
   rc.onSuggestion((sug) => toast(`${sug.from} wants to play ${gameTitle(sug.rom.path)}`));
   // Always keep an eye on connected controllers (cheap), so Host/Join use the right setup.
   window.addEventListener('gamepadconnected', refreshPads);

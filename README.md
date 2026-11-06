@@ -22,6 +22,24 @@ mismatched files. Then RetroArch launches and connects for both of you.
   **Ask to play** (they get a pop-up with **Host it**) or **Get it**.
 - **Player 1 / Player 2**: choose who's Player 1 when you host (you or your
   friend). See *Players and controllers* below.
+- **Box art and clean names**: covers from libretro's thumbnail server (the
+  one RetroArch uses), and "The Legend of Zelda - A Link to the Past" instead
+  of `Legend of Zelda, The - A Link to the Past (USA) [!].sfc`.
+- **★ Favorites and Recently played**: star games, see when you last played
+  them and how often. "Pick a game for us" favors favorites and games you
+  haven't played lately.
+- **Connection check** (Connect page): ping to your buddy, and whether each of
+  you can reach the other's netplay port, with fixes if not.
+- **Version warnings**: the join banner warns when your RetroArch, core or
+  RetroConnect versions differ, with a button to install the host's exact
+  RetroArch version.
+- **Lag smoothing**: a frame or two of input delay picked automatically from
+  your ping, so online games stutter less (Settings, or set it by hand).
+- **Shared saves**: when you host, RetroConnect grabs your buddy's battery save
+  (`.srm`) for that game if it's newer, so co-op progress carries over. Yours is
+  kept as a backup. Newer is judged by how long ago each save was written on
+  its own PC, so a wrong clock doesn't cause trouble. Your buddy needs **Share
+  my library** on, so your app can fetch from theirs.
 - **Open Discord**: save your group's Discord invite or channel link once
   (Connect page) and both of you get a button for it.
 - **RetroArch setup** page: one button installs RetroArch, the cores for the

@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('rc', {
   installRetroArch: (version) => call('retroarch:install', version),
   checkConnection: () => call('conn:check'),
   suggest: (sha) => call('suggest', sha),
+  toggleFavorite: (sha) => call('favorite', sha),
+  onThumbs: on('thumbs'),
   clearSuggestion: () => call('suggest:clear'),
   checkForUpdates: () => call('update:check'),
   raSetupInfo: () => call('ra-setup:info'),
