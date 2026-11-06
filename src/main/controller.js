@@ -14,6 +14,9 @@ const launcher = require('./launcher');
 const { Library, retroarchVersion, clearVersionCache } = require('./library');
 const raInstaller = require('./retroarch-installer');
 const tailscaleLib = require('./tailscale');
+const updater = require('./updater');
+const raSetup = require('./retroarch-setup');
+const { fetchCoreFromBuildbot } = require('./sync');
 const { SyncServer } = require('./server');
 const { HostClient, Syncer, SyncError, compare } = require('./sync');
 
@@ -44,6 +47,7 @@ class Controller extends EventEmitter {
     dataDir, version = '0', pollMs = POLL_MS, launch = launcher.run, fetchCore,
     retroarchDir = path.join(dataDir, 'RetroArch'), installer = raInstaller,
     tailscale = tailscaleLib,
+    updateFeedDefault = '', fetchImpl = globalThis.fetch,
   } = {}) {
     super();
     this.dataDir = dataDir;
@@ -73,6 +77,10 @@ class Controller extends EventEmitter {
     this.tsLogin = null; // { child, authUrl } while signing in
     this.tsLatest = null;
     this.tick = 0;
+    this.updateFeedDefault = updateFeedDefault;
+    this.fetchImpl = fetchImpl;
+    this.update = null; // result of the last update check
+    this.suggestionSeq = 0;
   }
 
   // ----- lifecycle -----------------------------------------------------------
@@ -116,7 +124,7 @@ class Controller extends EventEmitter {
     if (this.server) await this.server.stop();
     this.server = null;
     this.serverError = null;
-    const wanted = this.cfg.sharedSecret && (this.cfg.shareLibrary || this.hosting);
+    const wanted = this.cfg.sharedSecret && (this.cfg.shareLibrary || this.hosting || this.mySuggestion);
     if (!wanted) return;
     try {
       const server = new SyncServer({
@@ -124,6 +132,7 @@ class Controller extends EventEmitter {
       });
       await server.start();
       server.session = session;
+      server.discordUrl = this.cfg.discordUrl;
       this.server = server;
     } catch (err) {
       this.serverError = err.code === 'EADDRINUSE'
@@ -157,6 +166,10 @@ class Controller extends EventEmitter {
       hosting: this.hosting ? { rom: this.hosting.rom, core: this.hosting.core } : null,
       playing: this.playing,
       busy: this.busy,
+      update: this.update,
+      updateFeed: this.updateFeed(),
+      discord: this.discordLink(),
+      mySuggestion: this.mySuggestion || null,
       tailscale: {
         ...this.ts,
         canInstall: platforms.osName() === 'windows' || process.env.RETROCONNECT_ALLOW_TS_INSTALL === '1',
@@ -223,7 +236,11 @@ class Controller extends EventEmitter {
         this.buddyManifest = await client.manifest();
         this.buddyManifestAt = Date.now();
       }
-      const session = await client.session();
+      const status = await client.status();
+      const session = status.session || null;
+      // Only trust well-formed suggestions and real Discord links from the network.
+      const sug = status.suggestion && status.suggestion.rom && typeof status.suggestion.rom.sha256 === 'string'
+        ? status.suggestion : null;
       const m = this.buddyManifest;
       this.setBuddy({
         status: 'online',
@@ -232,7 +249,13 @@ class Controller extends EventEmitter {
         retroarchVersion: m.retroarch_version,
         romCount: m.roms.length,
         session,
+        suggestion: sug,
+        discordUrl: config.isDiscordUrl(status.discord_url) ? status.discord_url : null,
       });
+      if (sug && !(before.suggestion && before.suggestion.id === sug.id)) {
+        this.emit('suggestion', sug);
+        this.log(`${sug.from} suggests playing ${sug.rom.path}`);
+      }
       if (session && !(before.session && before.session.started_at === session.started_at)) {
         this.emit('invite', session);
         this.log(`${session.host_nickname} is hosting ${session.rom.path}`);
@@ -267,6 +290,148 @@ class Controller extends EventEmitter {
       };
     });
     return { rows, cores: local.cores, buddyOnline: Boolean(this.buddyManifest), romsDir: this.cfg.romsDir };
+  }
+
+  // ----- suggestions & Discord ------------------------------------------------
+
+  /** Tell your buddy "let's play this". Shows up as a banner in their app. */
+  async suggest(sha256) {
+    const local = await this.library.manifest();
+    let rom = local.roms.find((r) => r.sha256 === sha256);
+    if (!rom && this.buddyManifest) rom = this.buddyManifest.roms.find((r) => r.sha256 === sha256);
+    if (!rom) throw new Error('That game isn\'t in either library anymore');
+    if (!this.cfg.sharedSecret) throw new Error('Set up a shared secret first (Settings)');
+    const suggestion = {
+      id: `${Date.now()}-${++this.suggestionSeq}`,
+      rom: { path: rom.path, sha256: rom.sha256, size: rom.size },
+      from: this.cfg.nickname,
+      at: Date.now(),
+    };
+    this.mySuggestion = suggestion;
+    // Your buddy reads suggestions from your server, so make sure it's running
+    // even if "share my library" is off.
+    if (!this.server) await this.restartServer();
+    if (!this.server) {
+      this.mySuggestion = null;
+      throw new Error(`Can't send the suggestion: ${this.serverError}`);
+    }
+    this.server.suggestion = suggestion;
+    this.log(`Suggested ${rom.path} to ${this.buddy.nickname || 'your buddy'}`);
+    this.emitState();
+    return this.mySuggestion;
+  }
+
+  clearSuggestion() {
+    const had = this.mySuggestion;
+    if (this.server) this.server.suggestion = null;
+    this.mySuggestion = null;
+    // Stop a server that only ran for the suggestion.
+    if (had && this.server && !this.cfg.shareLibrary && !this.hosting) this.restartServer().then(() => this.emitState());
+    this.emitState();
+  }
+
+  /** Your Discord link, or your buddy's if you haven't set one. */
+  discordLink() {
+    if (this.cfg.discordUrl) return { url: this.cfg.discordUrl, from: 'you' };
+    if (this.buddy && this.buddy.discordUrl) return { url: this.buddy.discordUrl, from: this.buddy.nickname };
+    return null;
+  }
+
+  // ----- app updates ----------------------------------------------------------
+
+  updateFeed() {
+    return this.cfg.updateFeedUrl || this.updateFeedDefault || '';
+  }
+
+  async checkForUpdates() {
+    this.update = { ...(this.update || {}), checking: true };
+    this.emitState();
+    try {
+      this.update = await updater.checkForUpdate({ feedUrl: this.updateFeed(), currentVersion: this.version, fetchImpl: this.fetchImpl });
+      if (this.update.available) this.log(`RetroConnect ${this.update.latest} is available`);
+    } catch (err) {
+      this.update = { configured: true, error: err.message, checkedAt: Date.now() };
+      throw err;
+    } finally {
+      this.emitState();
+    }
+    return this.update;
+  }
+
+  // ----- RetroArch setup assistant -------------------------------------------
+
+  async retroarchSetupInfo() {
+    const file = raSetup.configPath(config.retroarchCmd(this.cfg));
+    const current = await raSetup.readSettings(file);
+    const installed = new Set((await this.library.scanCores()).map((c) => c.name));
+    return {
+      configFile: file,
+      configExists: Object.keys(current).length > 0,
+      current: Object.fromEntries(Object.keys(raSetup.recommendedSettings({ controllerKind: 'xbox' }))
+        .map((k) => [k, current[k] ?? null])),
+      systems: raSetup.SYSTEMS.map((s) => ({ ...s, installed: installed.has(s.core) })),
+    };
+  }
+
+  assertRetroArchClosed() {
+    if (this.hosting || this.playing) throw new Error('Close RetroArch (finish your game) first');
+  }
+
+  async applyRetroArchSettings(opts = {}) {
+    this.assertRetroArchClosed();
+    const changes = raSetup.recommendedSettings(opts);
+    const file = raSetup.configPath(config.retroarchCmd(this.cfg));
+    const r = await raSetup.applySettings(file, changes);
+    this.log(`Updated RetroArch settings (${Object.keys(changes).length} changes) in ${file}`);
+    return r;
+  }
+
+  async installCores(coreNames) {
+    return this.withBusy('Installing cores', () => this._installCores(coreNames));
+  }
+
+  async _installCores(coreNames) {
+    const fetchCore = this.fetchCore || fetchCoreFromBuildbot;
+    const installed = new Set((await this.library.scanCores()).map((c) => c.name));
+    const todo = [...new Set(coreNames)].filter((n) => !installed.has(n));
+    const failed = [];
+    for (let i = 0; i < todo.length; i++) {
+      this.progress({ label: `Installing cores (${i + 1} of ${todo.length})`, done: i, total: todo.length, percent: false, count: true });
+      try {
+        await fetchCore(todo[i], this.library.coresDir, (m) => this.log(m));
+      } catch (err) {
+        failed.push(todo[i]);
+        this.log(`${todo[i]}: ${err.message}`, 'warn');
+      }
+    }
+    this.progress({ label: 'Installing cores', done: todo.length, total: todo.length || 1, count: true });
+    this.log(todo.length ? `Installed ${todo.length - failed.length} core(s)` : 'Those cores were already installed');
+    if (failed.length) throw new Error(`Couldn't install: ${failed.join(', ')}. Try again, or use RetroArch's Online Updater.`);
+    return { installed: todo.length - failed.length };
+  }
+
+  /** The big button: RetroArch (if missing) + cores + settings. */
+  async setUpEverything({ cores = [], settings = {} } = {}) {
+    this.assertRetroArchClosed();
+    if (!config.retroarchCmd(this.cfg).length) {
+      if (!this.raLatest) await this.checkRetroArchLatest();
+      await this.installRetroArch();
+    }
+    if (cores.length) await this.installCores(cores);
+    await this.applyRetroArchSettings(settings);
+    this.log('RetroArch is set up. Click "Test RetroArch" to try your controller.');
+    return this.retroarchSetupInfo();
+  }
+
+  /** Open RetroArch's menu on its own, e.g. to check the controller is detected. */
+  openRetroArch() {
+    this.assertRetroArchClosed();
+    const ra = config.retroarchCmd(this.cfg);
+    if (!ra.length) throw new Error('Install RetroArch first');
+    const { spawn } = require('child_process');
+    const child = spawn(ra[0], ra.slice(1), { detached: true, stdio: 'ignore' });
+    child.on('error', (err) => this.log(`Couldn't start RetroArch: ${err.message}`, 'error'));
+    child.unref();
   }
 
   // ----- Tailscale ------------------------------------------------------------
@@ -430,6 +595,7 @@ class Controller extends EventEmitter {
     }
     if (!this.cfg.sharedSecret) throw new Error('Set up a shared secret first (Settings)');
 
+    this.clearSuggestion(); // you're playing now; no need to keep suggesting
     this.hosting = { rom, core, child: null };
     if (!this.server) await this.restartServer();
     if (!this.server) {

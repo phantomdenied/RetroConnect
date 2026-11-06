@@ -81,6 +81,16 @@ class HostClient {
     return this.getJson('/api/manifest');
   }
 
+  /** Session + suggestion + Discord link; falls back for older buddies without /api/status. */
+  async status() {
+    try {
+      return await this.getJson('/api/status');
+    } catch (err) {
+      if (!(err instanceof HttpError && err.status === 404)) throw err;
+      return { session: await this.session(), suggestion: null, discord_url: null };
+    }
+  }
+
   async session() {
     try {
       return await this.getJson('/api/session');

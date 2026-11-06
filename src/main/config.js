@@ -38,7 +38,21 @@ function defaults() {
     sharedSecret: '',
     coreMap: { ...DEFAULT_CORE_MAP },
     buildbotFallback: true,
+    discordUrl: '', // invite or channel link for the Discord you both hang out in
+    updateFeedUrl: '', // public JSON announcing new versions (overrides the built-in one)
   };
+}
+
+const DISCORD_HOSTS = new Set(['discord.com', 'www.discord.com', 'discord.gg', 'ptb.discord.com', 'canary.discord.com', 'discordapp.com', 'www.discordapp.com']);
+
+/** True for https links to Discord (invites like discord.gg/abc or channel links). */
+function isDiscordUrl(u) {
+  try {
+    const url = new URL(String(u));
+    return url.protocol === 'https:' && DISCORD_HOSTS.has(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 function generateSecret() {
@@ -59,6 +73,10 @@ function validate(cfg) {
   if (cfg.netplayPort === cfg.syncPort) throw new Error('Netplay and sync ports must differ');
   if (typeof cfg.nickname !== 'string' || !cfg.nickname.trim()) throw new Error('Nickname is required');
   if (!Array.isArray(cfg.retroarchCommand)) throw new Error('retroarchCommand must be a list');
+  if (cfg.discordUrl && !isDiscordUrl(cfg.discordUrl)) {
+    throw new Error('The Discord link should look like https://discord.gg/abc123 or https://discord.com/channels/…');
+  }
+  if (cfg.updateFeedUrl && !/^https:\/\//.test(cfg.updateFeedUrl)) throw new Error('The update link must start with https://');
   return cfg;
 }
 
@@ -75,6 +93,9 @@ function normalize(raw = {}) {
   cfg.nickname = String(cfg.nickname).trim();
   cfg.peerAddress = String(cfg.peerAddress || '').trim();
   cfg.sharedSecret = String(cfg.sharedSecret || '').trim();
+  cfg.discordUrl = String(cfg.discordUrl || '').trim();
+  if (cfg.discordUrl && !/^[a-z]+:\/\//i.test(cfg.discordUrl)) cfg.discordUrl = `https://${cfg.discordUrl}`;
+  cfg.updateFeedUrl = String(cfg.updateFeedUrl || '').trim();
   return validate(cfg);
 }
 
@@ -116,6 +137,6 @@ function isConfigured(cfg) {
 
 module.exports = {
   CONNECTION_MODES, RELAY_SERVERS, DEFAULT_CORE_MAP,
-  defaults, normalize, load, save, generateSecret,
+  defaults, normalize, load, save, generateSecret, isDiscordUrl,
   retroarchCmd, coresPath, coreForExtension, isConfigured,
 };

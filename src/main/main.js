@@ -69,6 +69,15 @@ function wireIpc() {
   handle('sync', (shas) => controller.syncGames(shas || null));
   handle('retroarch:latest', () => controller.checkRetroArchLatest());
   handle('retroarch:install', () => controller.installRetroArch());
+  handle('suggest', (sha) => controller.suggest(sha));
+  handle('suggest:clear', () => controller.clearSuggestion());
+  handle('update:check', () => controller.checkForUpdates());
+  handle('ra-setup:info', () => controller.retroarchSetupInfo());
+  handle('ra-setup:apply', (opts) => controller.applyRetroArchSettings(opts || {}));
+  handle('ra-setup:cores', (names) => controller.installCores(Array.isArray(names) ? names : []));
+  handle('ra-setup:all', (opts) => controller.setUpEverything(opts || {}));
+  handle('ra-setup:open', () => controller.openRetroArch());
+  handle('ra-setup:classify', (ids) => (Array.isArray(ids) ? ids : []).map((id) => require('./retroarch-setup').classifyController(id)));
   handle('tailscale:refresh', () => controller.refreshTailscale());
   handle('tailscale:latest', () => controller.checkTailscaleLatest());
   handle('tailscale:install', () => controller.installTailscale());
@@ -107,6 +116,14 @@ function wireController() {
       send('progress', p);
     }
   });
+  controller.on('suggestion', (sug) => {
+    send('suggestion', sug);
+    if (Notification.isSupported() && !(win && win.isFocused())) {
+      const n = new Notification({ title: `${sug.from} suggests a game`, body: path.basename(sug.rom.path) });
+      n.on('click', () => { if (win) { win.show(); win.focus(); } });
+      n.show();
+    }
+  });
   controller.on('invite', (session) => {
     send('invite', session);
     if (Notification.isSupported() && !(win && win.isFocused())) {
@@ -125,6 +142,7 @@ app.whenReady().then(async () => {
   controller = new Controller({
     dataDir,
     version: app.getVersion(),
+    updateFeedDefault: (require('../../package.json').retroconnect || {}).updateFeedUrl || '',
     // Big, machine-specific files belong in Local AppData, not the roaming profile.
     retroarchDir: process.env.LOCALAPPDATA && !process.env.RETROCONNECT_HOME
       ? path.join(process.env.LOCALAPPDATA, 'RetroConnect', 'RetroArch')
@@ -134,6 +152,10 @@ app.whenReady().then(async () => {
   wireController();
   await controller.init();
   createWindow();
+  // Quietly look for a new version shortly after start, then every 6 hours.
+  const check = () => { if (controller.updateFeed()) controller.checkForUpdates().catch(() => {}); };
+  setTimeout(check, 5000);
+  setInterval(check, 6 * 60 * 60 * 1000);
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
 });
 

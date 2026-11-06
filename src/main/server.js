@@ -5,6 +5,7 @@
 // Endpoints (all require `Authorization: Bearer <sharedSecret>`):
 //   GET /api/manifest          ROM + core library
 //   GET /api/session           what's being hosted right now (404 if idle)
+//   GET /api/status            { session, suggestion, discord_url } in one poll
 //   GET /files/rom/<sha256>    a ROM, by content hash
 //   GET /files/core/<sha256>   a core, by content hash
 //
@@ -27,6 +28,8 @@ class SyncServer {
     this.requestedPort = port;
     this.version = version;
     this.session = null;
+    this.suggestion = null; // { id, rom, from, at }: "let's play this"
+    this.discordUrl = '';
     this.index = null; // Map "kind:sha" -> absolute path
     this.server = http.createServer((req, res) => {
       this.handle(req, res).catch((err) => {
@@ -90,6 +93,13 @@ class SyncServer {
     const url = req.url.split('?')[0];
     if (this.onRequest) this.onRequest(url, req.socket.remoteAddress);
     if (url === '/api/manifest') return this.json(res, 200, await this.manifest());
+    if (url === '/api/status') {
+      return this.json(res, 200, {
+        session: this.session,
+        suggestion: this.suggestion,
+        discord_url: this.discordUrl || null,
+      });
+    }
     if (url === '/api/session') {
       return this.session
         ? this.json(res, 200, this.session)

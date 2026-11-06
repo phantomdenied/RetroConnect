@@ -98,12 +98,14 @@ function addLog(entry) {
 }
 
 let progressHide = null;
-function showProgress({ label, done, total, percent }) {
+function showProgress({ label, done, total, percent, count }) {
   const box = $('#progress');
   const pct = total ? Math.min(100, (100 * done) / total) : 100;
   box.hidden = false;
   box.querySelector('.progress-fill').style.width = `${pct}%`;
-  box.querySelector('.progress-label').textContent = percent
+  box.querySelector('.progress-label').textContent = count
+    ? label
+    : percent
     ? `${label} · ${pct.toFixed(0)}%`
     : `${label.split('/').pop()} · ${pct.toFixed(0)}% of ${fmtBytes(total)}`;
   clearTimeout(progressHide);
@@ -116,11 +118,13 @@ function render() {
   if (!S) return;
   renderBuddyCard();
   renderBanner();
-  for (const v of ['games', 'buddy', 'settings']) $(`#view-${v}`).hidden = v !== view;
+  renderDiscord();
+  for (const v of ['games', 'buddy', 'retroarch', 'settings']) $(`#view-${v}`).hidden = v !== view;
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   if (view === 'games') renderGames();
   if (view === 'buddy') renderConnect();
   if (view === 'settings') renderSettings();
+  if (view === 'retroarch') renderRetroArch();
   renderWizard();
 }
 
@@ -174,9 +178,113 @@ function renderBanner() {
       h('button', {
         class: 'btn primary', disabled: Boolean(S.busy),
         onclick: () => act(async () => { await rc.join(); await loadLibrary(); }, { success: 'Starting RetroArch…' }),
-      }, S.busy ? S.busy + '…' : 'Join game'));
+      }, S.busy ? S.busy + '…' : 'Join game'),
+      S.discord ? discordButton('btn') : null);
+  } else if (b.status === 'online' && b.suggestion && !dismissed.has(b.suggestion.id)) {
+    node = suggestionBanner(b.suggestion);
+  } else if (S.mySuggestion) {
+    node = h('div', { class: 'banner suggest' },
+      h('span', { class: 'emoji' }, '💬'),
+      h('div', { class: 'grow' },
+        h('div', { class: 'big' }, `You suggested ${gameTitle(S.mySuggestion.rom.path)}`),
+        h('div', { class: 'muted small' }, `${buddyName()} sees it in their app. Host it when you're both ready.`)),
+      h('button', { class: 'btn small', onclick: () => act(() => rc.clearSuggestion()) }, 'Cancel'));
   }
-  mount($('#banner'), node);
+  mount($('#banner'), updateBanner(), node);
+}
+
+// ----- suggestions -----------------------------------------------------------
+
+const dismissed = new Set();
+let pick = null; // row picked by "Pick a game for us"
+const recentPicks = [];
+
+function rowBySha(sha) {
+  return lib ? lib.rows.find((r) => (r.mine && r.mine.sha256 === sha) || (r.theirs && r.theirs.sha256 === sha)) : null;
+}
+
+function suggestionBanner(sug) {
+  const row = rowBySha(sug.rom.sha256);
+  const haveIt = row && row.mine && row.mine.sha256 === sug.rom.sha256;
+  const busy = Boolean(S.busy) || Boolean(S.hosting) || Boolean(S.playing);
+  return h('div', { class: 'banner suggest' },
+    h('span', { class: 'emoji' }, '💬'),
+    h('div', { class: 'grow' },
+      h('div', { class: 'big' }, `${sug.from} wants to play ${gameTitle(sug.rom.path)}`),
+      h('div', { class: 'muted small' }, haveIt ? 'You have it. Host it and they get an invite.' : `You don't have it yet (${fmtBytes(sug.rom.size)}). One click gets it from them.`)),
+    haveIt
+      ? h('button', { class: 'btn primary', disabled: busy, onclick: () => act(() => rc.host(sug.rom.sha256), { success: `Hosting ${gameTitle(sug.rom.path)}` }) }, 'Host it')
+      : h('button', {
+        class: 'btn cyan', disabled: busy,
+        onclick: () => act(async () => { await rc.sync([sug.rom.sha256]); await loadLibrary(); }, { success: `Got ${gameTitle(sug.rom.path)}. Now hit Host it.` }),
+      }, 'Get it'),
+    h('button', { class: 'btn small', onclick: () => { dismissed.add(sug.id); renderBanner(); } }, 'Not now'));
+}
+
+function pickGame() {
+  const rows = lib ? lib.rows : [];
+  // Prefer games you both have; otherwise anything one of you can host.
+  let pool = rows.filter((r) => r.status === 'both');
+  if (!pool.length) pool = rows.filter((r) => r.mine || r.theirs);
+  if (!pool.length) return toast('No games yet. Add some ROMs first.', 'error');
+  const fresh = pool.filter((r) => !recentPicks.includes(r.path));
+  const from = fresh.length ? fresh : pool;
+  pick = from[Math.floor(Math.random() * from.length)];
+  recentPicks.push(pick.path);
+  if (recentPicks.length > Math.min(5, pool.length - 1)) recentPicks.shift();
+  renderGames();
+}
+
+function pickCard() {
+  if (!pick) return null;
+  const r = rowBySha((pick.mine || pick.theirs).sha256) || pick;
+  const buddyOnline = S.buddy.status === 'online';
+  return h('div', { class: 'pick-card' },
+    h('div', { class: 'pick-dice' }, '🎲'),
+    h('div', { class: 'grow' },
+      h('div', { class: 'muted small' }, 'How about…'),
+      h('div', { class: 'pick-title' }, gameTitle(r.path)),
+      h('div', { class: 'muted small' }, `${systemOf(r.path)} · ${r.status === 'both' ? 'you both have it' : STATUS_TEXT[r.status] || ''}`)),
+    h('div', { class: 'actions' },
+      r.mine ? h('button', {
+        class: 'btn primary', disabled: !r.coreInstalled || Boolean(S.hosting || S.playing),
+        onclick: () => act(async () => { await rc.host(r.mine.sha256); pick = null; renderGames(); }, { success: `Hosting ${gameTitle(r.path)}` }),
+      }, 'Host it') : null,
+      buddyOnline ? h('button', {
+        class: 'btn cyan',
+        onclick: () => act(async () => { await rc.suggest((r.mine || r.theirs).sha256); pick = null; renderGames(); }, { success: `Suggested to ${buddyName()}` }),
+      }, `Suggest to ${buddyName()}`) : null,
+      h('button', { class: 'btn', onclick: pickGame }, 'Another one'),
+      h('button', { class: 'btn small', title: 'Close', onclick: () => { pick = null; renderGames(); } }, '✕')));
+}
+
+// ----- Discord ---------------------------------------------------------------
+
+function discordButton(cls = 'btn small') {
+  if (!S.discord) return null;
+  return h('button', { class: `${cls} discord`, onclick: () => act(() => rc.openUrl(S.discord.url)) }, 'Open Discord');
+}
+
+function renderDiscord() {
+  const d = S.discord;
+  mount($('#discord-slot'), d ? h('div', { class: 'discord-card' },
+    discordButton('btn'),
+    h('div', { class: 'muted small' }, d.from === 'you' ? 'Your group chat' : `Shared by ${d.from}`)) : null);
+}
+
+// ----- app updates -----------------------------------------------------------
+
+let hiddenUpdate = null;
+function updateBanner() {
+  const u = S.update;
+  if (!u || !u.available || hiddenUpdate === u.latest) return null;
+  return h('div', { class: 'banner update' },
+    h('span', { class: 'emoji' }, '⬆️'),
+    h('div', { class: 'grow' },
+      h('div', { class: 'big' }, `RetroConnect ${u.latest} is available`),
+      h('div', { class: 'muted small' }, u.notes || `You have ${u.current}. Download it, run it, and it updates in place. Your settings stay.`)),
+    h('button', { class: 'btn primary', onclick: () => act(() => rc.openUrl(u.url)) }, 'Download update'),
+    h('button', { class: 'btn small', onclick: () => { hiddenUpdate = u.latest; renderBanner(); } }, 'Later'));
 }
 
 function filteredRows() {
@@ -198,7 +306,7 @@ function gameRow(r) {
     actions.push(h('button', {
       class: 'btn small primary', disabled: !canHost || !r.coreInstalled,
       title: !r.coreInstalled
-        ? (r.coreName ? `${r.coreName} isn't installed. Get it from RetroArch's Online Updater.` : 'No core set for this file type (Settings → Cores)')
+        ? (r.coreName ? `${r.coreName} isn't installed. Install it on the RetroArch page.` : 'No core set for this file type (Settings → Cores)')
         : `Start ${gameTitle(r.path)} and invite ${buddyName()}`,
       onclick: () => act(() => rc.host(r.mine.sha256), { success: `Hosting ${gameTitle(r.path)}` }),
     }, 'Host'));
@@ -210,6 +318,12 @@ function gameRow(r) {
       onclick: () => act(async () => { await rc.sync([r.theirs.sha256]); await loadLibrary(); },
         { success: `Got ${gameTitle(r.path)}` }),
     }, r.status === 'different' ? 'Use buddy\'s' : 'Get it'));
+  }
+  if (S.buddy.status === 'online' && (r.mine || r.theirs)) {
+    actions.push(h('button', {
+      class: 'btn small', title: `Ask ${buddyName()} to play this`,
+      onclick: () => act(() => rc.suggest((r.mine || r.theirs).sha256), { success: `Suggested to ${buddyName()}` }),
+    }, 'Suggest'));
   }
   const core = r.coreName ? r.coreName.replace(/_libretro$/, '') : 'no core set';
   const entry = r.mine || r.theirs;
@@ -240,6 +354,7 @@ function renderGames() {
   mount(root,
     h('div', { class: 'view-head' },
       h('h1', {}, 'Games'),
+      h('button', { class: 'btn', onclick: pickGame }, '🎲 Pick a game for us'),
       h('button', { class: 'btn', onclick: () => act(() => loadLibrary(true)) }, 'Refresh'),
       lib && lib.buddyOnline && needs
         ? h('button', {
@@ -253,6 +368,7 @@ function renderGames() {
         class: `chip ${filter === key ? 'active' : ''}`,
         onclick: () => { filter = key; renderGames(); },
       }, label, h('span', { class: 'count' }, n))))),
+    pickCard(),
     h('div', { id: 'game-list', class: 'games' }));
   renderGameList();
 }
@@ -358,7 +474,22 @@ function renderConnect() {
           h('dt', {}, 'Sharing'), h('dd', {}, S.server.running
             ? `On, port ${S.server.port}`
             : (S.server.error ? h('span', { style: 'color:var(--bad)' }, S.server.error) : 'Off')),
-          h('dt', {}, 'Your system'), h('dd', {}, S.platform)))));
+          h('dt', {}, 'Your system'), h('dd', {}, S.platform)))),
+    discordCard());
+}
+
+function discordCard() {
+  const cfg = S.config;
+  const input = h('input', { type: 'text', value: cfg.discordUrl, placeholder: 'https://discord.gg/abc123' });
+  const b = S.buddy || {};
+  return h('div', { class: 'card', style: 'margin-top:16px' },
+    h('h2', {}, 'Discord'),
+    h('p', { class: 'muted small', style: 'margin-top:0' },
+      'Paste an invite (discord.gg/…) or a channel link for the Discord you both use. It shows up as an "Open Discord" button for both of you, so you can jump into voice when a game starts.'),
+    h('div', { class: 'row' }, input,
+      h('button', { class: 'btn primary', onclick: () => act(() => rc.saveSettings({ discordUrl: input.value }), { success: input.value ? 'Discord link saved' : 'Discord link removed' }) }, 'Save'),
+      S.discord ? discordButton('btn') : null),
+    !cfg.discordUrl && b.discordUrl ? h('div', { class: 'hint small muted', style: 'margin-top:8px' }, `Using ${b.nickname}'s link: ${b.discordUrl}`) : null);
 }
 
 function renderSettings() {
@@ -415,6 +546,7 @@ function renderSettings() {
         h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: d.buildbotFallback, onchange: bind('buildbotFallback') }),
           h('div', {}, h('div', {}, h('b', {}, 'Download cores from libretro when we\'re on different systems')),
             h('div', { class: 'muted small' }, 'A Windows core can\'t run on a Mac (and so on), so the same core is fetched from the official libretro buildbot.'))))),
+    updatesCard(d),
     h('div', { class: 'card', style: 'margin-top:16px' },
       h('h2', {}, 'Cores'),
       h('p', { class: 'muted small', style: 'margin-top:0' }, 'Which core runs each file type. Both players should use the same one. Installed cores are listed in green.'),
@@ -435,6 +567,152 @@ function renderSettings() {
         }, { success: 'Settings saved' }),
       }, 'Save settings'),
       h('button', { class: 'btn', onclick: () => { draft = null; renderSettings(); } }, 'Discard changes')));
+}
+
+function updatesCard(d) {
+  const u = S.update;
+  let status = null;
+  if (!S.updateFeed && !d.updateFeedUrl) status = h('span', { class: 'muted' }, 'Not set up yet. Paste the update link from whoever publishes RetroConnect.');
+  else if (u && u.checking) status = h('span', { class: 'muted' }, 'Checking…');
+  else if (u && u.error) status = h('span', { style: 'color:var(--bad)' }, u.error);
+  else if (u && u.available) status = h('span', {}, h('b', {}, `Version ${u.latest} is available. `), h('button', { class: 'link-btn', onclick: () => act(() => rc.openUrl(u.url)) }, 'Download'));
+  else if (u && u.configured) status = h('span', { class: 'ok-text' }, `✓ You're up to date (checked ${new Date(u.checkedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`);
+  return h('div', { class: 'card', style: 'margin-top:16px' },
+    h('h2', {}, 'App updates'),
+    h('div', { class: 'row', style: 'flex-wrap:wrap' },
+      h('span', {}, `RetroConnect ${S.version}`),
+      h('button', { class: 'btn small', disabled: !S.updateFeed || (u && u.checking), onclick: () => act(() => rc.checkForUpdates()) }, 'Check for updates'),
+      status),
+    h('div', { class: 'field', style: 'margin-top:12px;margin-bottom:0' }, h('label', {}, 'Update link'),
+      h('input', { type: 'text', value: d.updateFeedUrl, placeholder: S.updateFeed && !d.updateFeedUrl ? `Built in: ${S.updateFeed}` : 'https://gist.githubusercontent.com/…/raw/retroconnect.json', oninput: (e) => { d.updateFeedUrl = e.target.value.trim(); } }),
+      h('div', { class: 'hint' }, 'A public file that says which version is newest and where to download it. Save settings after changing it.')));
+}
+
+// ----- RetroArch setup page --------------------------------------------------
+
+let raInfo = null;
+let raInfoLoading = false;
+const raOpts = { fullscreen: true, stickAsDpad: true, startSelectMenu: true };
+let raCores = null; // Set of selected core names
+let pads = []; // [{ index, id, info }]
+let padLoop = null;
+
+async function loadRaInfo() {
+  if (raInfoLoading) return;
+  raInfoLoading = true;
+  try {
+    raInfo = await rc.raSetupInfo();
+    if (!raCores) raCores = new Set(raInfo.systems.filter((x) => x.netplay !== 'poor').map((x) => x.core));
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    raInfoLoading = false;
+    if (view === 'retroarch') renderRetroArch();
+  }
+}
+
+function readPads() {
+  return [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(Boolean);
+}
+
+async function refreshPads() {
+  const live = readPads();
+  const key = live.map((g) => `${g.index}:${g.id}`).join('|');
+  if (key === pads.key) return;
+  const info = live.length ? await rc.classifyPads(live.map((g) => g.id)) : [];
+  pads = live.map((g, i) => ({ index: g.index, id: g.id, info: info[i] }));
+  pads.key = key;
+  if (view === 'retroarch') renderRetroArch();
+}
+
+function startPadLoop() {
+  if (padLoop) return;
+  const tick = () => {
+    if (view !== 'retroarch') { padLoop = null; return; }
+    refreshPads();
+    // Light up buttons without re-rendering the page.
+    for (const g of readPads()) {
+      const row = document.querySelector(`[data-pad="${g.index}"]`);
+      if (!row) continue;
+      g.buttons.forEach((b, i) => { const dot = row.children[i]; if (dot) dot.classList.toggle('on', b.pressed || b.value > 0.5); });
+    }
+    padLoop = requestAnimationFrame(tick);
+  };
+  padLoop = requestAnimationFrame(tick);
+}
+
+function renderRetroArch() {
+  const root = $('#view-retroarch');
+  if (!raInfo) { loadRaInfo(); mount(root, h('div', { class: 'view-head' }, h('h1', {}, 'Set up RetroArch')), h('div', { class: 'empty' }, 'Loading…')); return; }
+  startPadLoop();
+  const haveRA = S.retroarch.command.length > 0;
+  const busy = Boolean(S.busy) || Boolean(S.hosting || S.playing);
+  const kind = pads[0] && pads[0].info ? pads[0].info.kind : null;
+  const settingsFor = () => ({ ...raOpts, controllerKind: kind });
+  const toggle = (key, title, desc) => h('label', { class: 'toggle' },
+    h('input', { type: 'checkbox', checked: raOpts[key], onchange: (e) => { raOpts[key] = e.target.checked; } }),
+    h('div', {}, h('div', {}, h('b', {}, title)), h('div', { class: 'muted small' }, desc)));
+
+  mount(root,
+    h('div', { class: 'view-head' },
+      h('h1', {}, 'Set up RetroArch'),
+      h('button', { class: 'btn', disabled: !haveRA || busy, onclick: () => act(() => rc.raOpen(), { success: 'Opening RetroArch. Your controller should say "configured" in the corner.' }) }, 'Test RetroArch'),
+      h('button', {
+        class: 'btn primary', disabled: busy,
+        onclick: () => act(async () => { raInfo = await rc.raSetupAll({ cores: [...raCores], settings: settingsFor() }); renderRetroArch(); await loadLibrary(); },
+          { success: 'All set! Click Test RetroArch to try it.' }),
+      }, S.busy ? `${S.busy}…` : 'Set it all up for me')),
+    h('p', { class: 'muted', style: 'margin-top:-6px' }, 'One button does everything below: installs RetroArch if needed, the cores you tick, and the right settings for your controller.'),
+
+    h('div', { class: 'card' },
+      h('div', { class: 'ts-step' }, h('span', { class: 'step-num' }, '1'), h('div', {}, h('b', {}, 'RetroArch'),
+        h('div', { class: 'muted small' }, haveRA ? `Installed${S.retroarch.version ? ` (${S.retroarch.version})` : ''}` : 'Not installed yet'))),
+      retroarchInstaller({ compact: true })),
+
+    h('div', { class: 'card', style: 'margin-top:16px' },
+      h('div', { class: 'ts-step' }, h('span', { class: 'step-num' }, '2'), h('div', {}, h('b', {}, 'Your controller'),
+        h('div', { class: 'muted small' }, 'Plug it in (or pair it) and press any button. Buttons light up below when they work.'))),
+      pads.length
+        ? h('div', { class: 'pads' }, pads.map((p, i) => h('div', { class: 'pad' },
+          h('div', { class: 'row' },
+            h('span', { class: 'pad-player' }, `Player ${i + 1}`),
+            h('b', {}, p.info ? p.info.name : p.id),
+            p.info ? h('span', { class: 'badge both' }, p.info.label) : null),
+          h('div', { class: 'pad-buttons', 'data-pad': p.index }, Array.from({ length: 17 }, () => h('span', { class: 'pad-dot' }))),
+          p.info ? h('div', { class: 'muted small' }, `RetroArch will use its "${p.info.driver}" controller driver, which knows this controller's layout.`) : null)))
+        : h('div', { class: 'pad-waiting' }, h('span', { class: 'pulse' }), 'Waiting for a controller… press any button on it.')),
+
+    h('div', { class: 'card', style: 'margin-top:16px' },
+      h('div', { class: 'ts-step' }, h('span', { class: 'step-num' }, '3'), h('div', {}, h('b', {}, 'Systems you play'),
+        h('div', { class: 'muted small' }, 'Each system needs a "core" (its emulator). Ticked ones get installed.'))),
+      h('div', { class: 'systems' }, raInfo.systems.map((x) => h('label', { class: 'toggle sys-row' },
+        h('input', {
+          type: 'checkbox', checked: x.installed || raCores.has(x.core), disabled: x.installed,
+          onchange: (e) => { if (e.target.checked) raCores.add(x.core); else raCores.delete(x.core); },
+        }),
+        h('div', { class: 'grow' }, h('b', {}, x.label),
+          x.netplay === 'poor' ? h('span', { class: 'muted small' }, ' · often laggy online') : null),
+        x.installed ? h('span', { class: 'ok-text' }, '✓ Installed') : null))),
+      h('button', {
+        class: 'btn', disabled: busy || !haveRA, style: 'margin-top:10px',
+        onclick: () => act(async () => { await rc.raSetupCores([...raCores]); raInfo = null; await loadRaInfo(); await loadLibrary(); }, { success: 'Cores installed' }),
+      }, 'Install ticked cores')),
+
+    h('div', { class: 'card', style: 'margin-top:16px' },
+      h('div', { class: 'ts-step' }, h('span', { class: 'step-num' }, '4'), h('div', {}, h('b', {}, 'Settings'),
+        h('div', { class: 'muted small' }, 'Sensible defaults for couch-style netplay. Close RetroArch before applying.'))),
+      h('div', { class: 'toggle static' }, h('span', { class: 'ok-text' }, '✓'),
+        h('div', {}, h('div', {}, h('b', {}, 'Keep playing when RetroArch isn\'t the active window')),
+          h('div', { class: 'muted small' }, 'Always on. Otherwise checking Discord would freeze the game for both of you.'))),
+      toggle('startSelectMenu', 'Open the RetroArch menu with Start + Select', 'So you never need a keyboard to get to the menu, save or quit.'),
+      toggle('stickAsDpad', 'Left stick works like the D-pad', 'Retro games only know the D-pad. This lets you use the stick too.'),
+      toggle('fullscreen', 'Start in fullscreen', 'Alt+Enter switches back to a window.'),
+      h('div', { class: 'row', style: 'margin-top:6px;flex-wrap:wrap' },
+        h('button', {
+          class: 'btn', disabled: busy || !haveRA,
+          onclick: () => act(async () => { await rc.raSetupApply(settingsFor()); raInfo = null; await loadRaInfo(); }, { success: 'RetroArch settings saved' }),
+        }, 'Apply settings'),
+        h('span', { class: 'muted small mono' }, raInfo.configFile))));
 }
 
 // ----- RetroArch install button ---------------------------------------------
@@ -662,6 +940,7 @@ function renderWizard() {
 
 async function loadLibrary(refreshBuddy = false) {
   lib = await rc.library({ refreshBuddy });
+  if (S) renderBanner(); // e.g. a suggestion banner changes from "Get it" to "Host it"
   if (view === 'games') renderGames();
 }
 
@@ -688,17 +967,21 @@ async function boot() {
         const v = JSON.parse(JSON.stringify(s.config[key]));
         if (draft) draft[key] = v;
         if (wiz.data) wiz.data[key] = v;
+        if (key === 'retroarchCommand') { raInfo = null; }
       }
     }
     // Don't rebuild a form while someone is typing in it.
-    const typing = document.activeElement && document.activeElement.matches('input, select')
-      && document.activeElement.closest('#view-settings, #wizard');
+    const typing = document.activeElement && document.activeElement.matches('input[type=text], input[type=search], input[type=number], textarea, select')
+      && document.activeElement.closest('.main, #wizard');
     if (typing) { renderBuddyCard(); renderBanner(); return; }
     render();
   });
   rc.onLog(addLog);
   rc.onProgress(showProgress);
   rc.onInvite((s) => toast(`${s.host_nickname} is hosting ${gameTitle(s.rom.path)}. Click Join!`));
+  rc.onSuggestion((sug) => toast(`${sug.from} wants to play ${gameTitle(sug.rom.path)}`));
+  window.addEventListener('gamepadconnected', () => { if (view === 'retroarch') refreshPads(); });
+  window.addEventListener('gamepaddisconnected', () => { if (view === 'retroarch') refreshPads(); });
 
   S = await rc.state();
   render();

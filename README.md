@@ -15,6 +15,14 @@ mismatched files. Then RetroArch launches and connects for both of you.
   or different (resumable, verified), and launches RetroArch connected to the
   host.
 - Anything replaced is kept as `<file>.<timestamp>.old`, never deleted.
+- **🎲 Pick a game for us** chooses something you both have. **Suggest** sends
+  it to your buddy, whose app shows "Sam wants to play …" with **Host it**
+  (or **Get it** if they don't have it yet).
+- **Open Discord**: save your group's Discord invite or channel link once
+  (Connect page) and both of you get a button for it.
+- **RetroArch setup** page: one button installs RetroArch, the cores for the
+  systems you tick, and controller-friendly settings (below).
+- **Update notice** when a new RetroConnect version is published (below).
 
 ## Install (Windows)
 
@@ -40,8 +48,30 @@ for you automatically. When a newer stable release comes out, the same button
 becomes **Update RetroArch**. Your settings, saves and cores are kept. If you
 both click it, you'll be on the same version, which netplay likes.
 
-A fresh RetroArch has no cores yet. Get them in RetroArch → *Online Updater →
-Core Downloader* (the guest gets the host's cores automatically when joining).
+### RetroArch setup page (for people who never want to see RetroArch's menus)
+
+Open the **RetroArch** page and press **Set it all up for me**. It:
+
+1. Installs RetroArch if it's missing.
+2. Installs a core (emulator) for each system you tick: NES, SNES, Genesis,
+   Arcade, PC Engine, Game Boy, GBA and Atari are ticked by default. N64 isn't,
+   because it's often laggy online.
+3. Sets up your controller. Press a button on it and the page shows its
+   name, its type (Xbox, PlayStation, Nintendo or generic) and lights up the
+   buttons you press. RetroConnect picks the RetroArch driver that recognizes
+   it (`xinput` for Xbox-style and generic pads, `sdl2` for PlayStation and
+   Nintendo) and turns on auto-configuration, so the buttons are mapped for you.
+4. Applies netplay-friendly settings:
+   - The game keeps running when RetroArch isn't the active window.
+     Otherwise alt-tabbing to Discord freezes it for both of you.
+   - **Start + Select** opens the RetroArch menu, so you never need a keyboard.
+   - The left stick works like the D-pad.
+   - RetroArch starts in fullscreen.
+
+**Test RetroArch** opens it so you can see the "controller configured" message.
+Your original `retroarch.cfg` is saved once as
+`retroarch.cfg.before-retroconnect`. Close RetroArch before applying settings,
+because RetroArch rewrites its config when it quits.
 
 Already have RetroArch? RetroConnect looks in the usual places
 (`C:\RetroArch-Win64`, Steam, `%APPDATA%`); otherwise point to `retroarch.exe`
@@ -98,15 +128,41 @@ npm test           # tests
 npm run dist       # Windows installer + portable .exe, in dist/
 ```
 
-Building on Linux/macOS needs Wine installed. To publish a release, push a version tag:
+Building on Linux/macOS needs Wine installed.
 
-```sh
-git tag v0.2.0 && git push origin v0.2.0
-```
+## Publishing an update
 
-GitHub Actions (`.github/workflows/build.yml`) builds the Windows installer and
-attaches it to a GitHub Release. You can also run the workflow by hand from
-the Actions tab and download the installer from the run page.
+The repo is private, so the app can't read its GitHub Releases. Instead, both
+apps check a small **public update file** you control, and show a
+**Download update** banner when it lists a newer version.
+
+**One-time setup:**
+1. Go to <https://gist.github.com>, create a **public** gist named
+   `retroconnect.json` with `{}` in it, and save.
+2. Click **Raw** and copy the link, then remove the long code between `/raw/`
+   and the file name. You want
+   `https://gist.githubusercontent.com/<you>/<gist-id>/raw/retroconnect.json`.
+   (With the code left in, the link would always show that one old version.)
+3. Paste it into **Settings → App updates → Update link** on both PCs and save.
+   To build it into future installers instead, put it in `package.json` under
+   `"retroconnect": { "updateFeedUrl": "…" }`.
+
+**Each release:**
+1. Bump `"version"` in `package.json` (e.g. `0.5.0` → `0.5.1`) and push.
+2. Build the installer: `npm run dist`, or on GitHub open *Actions → Build
+   Windows installer → Run workflow*, then download `RetroConnect-windows`
+   from the run page. Pushing a tag `v0.5.1` also attaches it to a (private)
+   GitHub Release.
+3. Upload `RetroConnect-x.y.z-win-setup.exe` somewhere your buddy can
+   download it (Google Drive, Dropbox, Discord, …) and copy the link.
+4. Generate the update file and paste it into the gist:
+
+   ```sh
+   npm run update-feed -- "https://your-download-link" "What changed"
+   ```
+
+Both apps check at startup and every 6 hours (or click **Check for updates**).
+Running the new installer upgrades in place and keeps all settings.
 
 ## How it works
 
@@ -122,6 +178,9 @@ folders, so nothing else on your PC is reachable.
 | `src/main/sync.js` | Guest side: matching, resumable downloads |
 | `src/main/launcher.js` | Builds the RetroArch `--host` / `--connect` command |
 | `src/main/retroarch-installer.js` | Installs/updates RetroArch from libretro's stable builds |
+| `src/main/retroarch-setup.js` | Controller detection, netplay-friendly `retroarch.cfg`, core list |
+| `src/main/tailscale.js` | Installs Tailscale, signs in / joins with a key, lists devices |
+| `src/main/updater.js` | Checks the public update file for a newer version |
 | `src/main/controller.js` | App state: hosting, joining, buddy polling |
 | `src/renderer/` | The UI |
 

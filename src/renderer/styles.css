@@ -226,3 +226,24 @@ table.cores td:first-child { width: 70px; font-family: var(--mono); color: var(-
 .ts-help ol { font-size: 13px; color: var(--muted); }
 .ts-help li { margin-bottom: 4px; }
 .ts-panel .choice { margin-bottom: 0; }
+
+.banner.suggest { border-color: rgba(94,231,255,.45); background: linear-gradient(90deg, rgba(94,231,255,.12), rgba(255,95,162,.06)); }
+.banner.update { border-color: rgba(87,227,155,.45); background: linear-gradient(90deg, rgba(87,227,155,.12), rgba(94,231,255,.05)); }
+.banner .emoji { font-size: 20px; flex: none; }
+.pick-card { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 16px; margin-bottom: 12px; border-radius: var(--radius); background: var(--panel-2); border: 1px solid var(--accent); }
+.pick-card .grow { flex: 1; min-width: 180px; }
+.pick-dice { font-size: 30px; }
+.pick-title { font-size: 18px; font-weight: 800; }
+.pick-card .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn.discord, .discord { background: #5865f2; border-color: #5865f2; color: #fff; }
+.discord-card { display: flex; flex-direction: column; gap: 4px; padding: 0 4px; }
+.pads { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.pad { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--bg); display: flex; flex-direction: column; gap: 8px; }
+.pad-player { font: 700 11px var(--mono); color: var(--accent); text-transform: uppercase; }
+.pad-buttons { display: flex; gap: 5px; flex-wrap: wrap; }
+.pad-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--panel-2); border: 1px solid var(--line); transition: background .05s; }
+.pad-dot.on { background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2); border-color: var(--accent-2); }
+.pad-waiting { display: flex; gap: 10px; align-items: center; margin-top: 10px; color: var(--muted); }
+.systems { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 16px; margin-top: 10px; }
+.sys-row { align-items: center; margin-bottom: 6px; }
+.toggle.static { cursor: default; }
