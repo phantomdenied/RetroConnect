@@ -8,6 +8,7 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const systems = require('./systems');
 
 const BASE = 'https://thumbnails.libretro.com';
 
@@ -22,6 +23,15 @@ const SYSTEMS = {
   sms: 'Sega - Master System - Mark III', gg: 'Sega - Game Gear',
   pce: 'NEC - PC Engine - TurboGrafx 16', a26: 'Atari - 2600',
 };
+
+/**
+ * libretro system folder for a ROM: from the system its folders name (zipped
+ * sets are the norm), else from its extension.
+ */
+function systemFor(romPath) {
+  if (systems.systemFromFolders(romPath)) return systems.thumbSystemForRom(romPath);
+  return SYSTEMS[path.extname(String(romPath)).slice(1).toLowerCase()] || null;
+}
 
 const REGION_ORDER = ['USA', 'World', 'USA, Europe', 'Europe', 'Japan'];
 const NEGATIVE_TTL_MS = 7 * 24 * 3600e3;
@@ -117,8 +127,7 @@ class ThumbCache {
 
   /** Queue a lookup; resolves true if art is now cached. */
   ensure(sha, romPath) {
-    const ext = path.extname(romPath).slice(1).toLowerCase();
-    if (!SYSTEMS[ext] || this.has(sha) || this.isNegative(sha) || this.pending.has(sha)) return Promise.resolve(this.has(sha));
+    if (!systemFor(romPath) || this.has(sha) || this.isNegative(sha) || this.pending.has(sha)) return Promise.resolve(this.has(sha));
     this.pending.add(sha);
     return new Promise((resolve) => {
       this.queue.push({ sha, romPath, resolve });
@@ -167,8 +176,7 @@ class ThumbCache {
   }
 
   async fetchOne(sha, romPath) {
-    const ext = path.extname(romPath).slice(1).toLowerCase();
-    const system = SYSTEMS[ext];
+    const system = systemFor(romPath);
     const base = path.basename(romPath).replace(/\.[^.]+$/, '');
     const tries = [base, base.replace(/\s*\[[^\]]*\]/g, '').trim()];
     if (!/\(/.test(base)) for (const r of ['USA', 'World', 'Europe', 'Japan']) tries.push(`${base} (${r})`);

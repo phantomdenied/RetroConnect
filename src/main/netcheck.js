@@ -32,7 +32,10 @@ function openTestListener(port, ttlMs = 10000) {
       code: err.code,
       error: err.code === 'EADDRINUSE' ? `port ${port} is already in use by another program` : err.message,
     }));
-    server.listen(port, '0.0.0.0', () => {
+    // No host: listen dual-stack ('::', falling back to 0.0.0.0), like
+    // RetroArch does. On Windows, binding 0.0.0.0 succeeds even while another
+    // program holds the port on '::', which would hide a real conflict.
+    server.listen({ port, exclusive: true }, () => {
       timer = setTimeout(close, ttlMs);
       resolve({ listening: true, close });
     });
@@ -58,4 +61,26 @@ async function measurePing(client, n = 5) {
   };
 }
 
-module.exports = { tcpReachable, openTestListener, measurePing };
+const PORT_CHECK_URL = 'https://portchecker.io/api/v1/query';
+
+/**
+ * Ask an outside service to connect to host:port for each port, i.e. "are my
+ * ports open from the internet?" without needing your buddy. Resolves to
+ * { <port>: true|false }.
+ */
+async function checkPortsFromInternet(fetchImpl, host, ports) {
+  const res = await fetchImpl(PORT_CHECK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ host, ports }),
+    signal: AbortSignal.timeout(25000),
+  });
+  if (!res.ok) throw new Error(`the port checker answered HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.error || !Array.isArray(data.check)) throw new Error(`the port checker failed${data.msg ? `: ${data.msg}` : ''}`);
+  const out = {};
+  for (const c of data.check) out[c.port] = c.status === true;
+  return out;
+}
+
+module.exports = { tcpReachable, openTestListener, measurePing, checkPortsFromInternet, PORT_CHECK_URL };

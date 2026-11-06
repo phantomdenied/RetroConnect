@@ -123,6 +123,12 @@ class SyncServer {
       const addr = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
       return this.json(res, 200, await this.onProbeBack(addr, port));
     }
+    if (url === '/api/swap' && this.onSwapPoll) {
+      // The guest's app, during a game: "should I play or watch?" (?request=1: "please swap").
+      const request = new URL(req.url, 'http://x').searchParams.get('request') === '1';
+      const r = this.onSwapPoll(request);
+      return r.error ? this.json(res, 404, r) : this.json(res, 200, r);
+    }
     if (url === '/api/session') {
       return this.session
         ? this.json(res, 200, this.session)

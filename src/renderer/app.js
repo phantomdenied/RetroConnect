@@ -68,7 +68,7 @@ function timeAgo(ms) {
   return d === 1 ? 'yesterday' : `${d} days ago`;
 }
 function cover(r) {
-  const tile = h('div', { class: 'sys' }, systemOf(r.path));
+  const tile = h('div', { class: 'sys' }, r.systemShort || systemOf(r.path));
   if (!r.thumb) return tile;
   const img = h('img', { class: 'cover', src: `rcthumb://cover/${r.sha}`, alt: '', loading: 'lazy' });
   img.addEventListener('error', () => img.replaceWith(tile));
@@ -191,6 +191,27 @@ function renderBuddyCard() {
     h('div', { class: 'sub' }, sub));
 }
 
+/** "You're Player 1 · Sam is Player 2" from what RetroArch reports, or a fallback. */
+function liveplayerTag(fallback) {
+  const np = S.netplay;
+  if (!np) return fallback ? h('span', { class: 'player-tag' }, fallback) : null;
+  if (np.swapping) return h('span', { class: 'player-tag' }, 'Swapping players…');
+  const me = np.me ? `You're Player ${np.me}` : 'You\'re watching';
+  const them = np.other ? ` · ${buddyName()} is Player ${np.other}` : '';
+  return h('span', { class: 'player-tag' }, me + them);
+}
+
+/** Swap Player 1 and Player 2 mid-game (taking turns in single-player games). */
+function swapButton() {
+  const np = S.netplay;
+  if (!np) return null;
+  return h('button', {
+    class: 'btn', disabled: np.swapping || !np.other && !np.me,
+    title: `Swap who is Player 1 without stopping the game. Handy for taking turns in single-player games.`,
+    onclick: () => act(() => rc.swapPlayers(), { success: (r) => (r && r.requested ? `Asked ${buddyName()}'s app to swap` : 'Swapped players') }),
+  }, '⇄ Swap players');
+}
+
 function renderBanner() {
   const b = S.buddy || {};
   let node = null;
@@ -199,7 +220,7 @@ function renderBanner() {
       h('span', { class: 'pulse' }),
       h('div', { class: 'grow' },
         h('div', { class: 'big' }, `You're hosting ${gameTitle(S.hosting.rom.path)}`,
-          h('span', { class: 'player-tag' }, `You're Player ${S.config.hostPlayer} · ${buddyName()} is Player ${3 - S.config.hostPlayer}`)),
+          liveplayerTag(`You're Player ${S.config.hostPlayer} · ${buddyName()} is Player ${3 - S.config.hostPlayer}`)),
         h('div', { class: 'muted small' },
           b.status === 'online'
             ? `${b.nickname} has been notified. Their app will download anything they're missing, then connect.`
@@ -207,13 +228,15 @@ function renderBanner() {
         b.status === 'online' && b.retroarchVersion && S.retroarch.version && b.retroarchVersion !== S.retroarch.version
           ? h('div', { class: 'warn-text small' }, `⚠ ${b.nickname} has RetroArch ${b.retroarchVersion}, you have ${S.retroarch.version}. Ask them to click "Match" on their invite to avoid desyncs.`)
           : null),
+      swapButton(),
       h('button', { class: 'btn danger', onclick: () => act(() => rc.stopHosting()) }, 'Stop hosting'));
   } else if (S.playing) {
     node = h('div', { class: 'banner hosting' },
       h('span', { class: 'pulse' }),
       h('div', { class: 'grow' },
-        h('div', { class: 'big' }, `Playing ${gameTitle(S.playing.rom.path)} with ${S.playing.host}`),
-        h('div', { class: 'muted small' }, 'Close RetroArch to end the session.')));
+        h('div', { class: 'big' }, `Playing ${gameTitle(S.playing.rom.path)} with ${S.playing.host}`, liveplayerTag(null)),
+        h('div', { class: 'muted small' }, 'Close RetroArch to end the session.')),
+      swapButton());
   } else if (b.status === 'online' && b.session) {
     const s = b.session;
     node = h('div', { class: 'banner' },
@@ -350,7 +373,7 @@ function pickCard() {
     h('div', { class: 'grow' },
       h('div', { class: 'muted small' }, 'How about…'),
       h('div', { class: 'pick-title' }, gameTitle(r.path)),
-      h('div', { class: 'muted small' }, `${systemOf(r.path)} · ${r.status === 'both' ? 'you both have it' : STATUS_TEXT[r.status] || ''}`)),
+      h('div', { class: 'muted small' }, `${r.systemShort || systemOf(r.path)} · ${r.status === 'both' ? 'you both have it' : STATUS_TEXT[r.status] || ''}`)),
     h('div', { class: 'actions' },
       r.mine ? h('button', {
         class: 'btn primary', disabled: !r.coreInstalled || Boolean(S.hosting || S.playing),
@@ -393,11 +416,60 @@ function updateBanner() {
     h('button', { class: 'btn small', onclick: () => { hiddenUpdate = u.latest; renderBanner(); } }, 'Later'));
 }
 
+// Dropdown filters on the Games page ('' = any).
+const facets = { system: '', language: '', kind: '', players: '', genre: '' };
+const LANG_NAMES = {
+  en: 'English', ja: 'Japanese', fr: 'French', de: 'German', es: 'Spanish', it: 'Italian', nl: 'Dutch',
+  pt: 'Portuguese', sv: 'Swedish', no: 'Norwegian', da: 'Danish', fi: 'Finnish', zh: 'Chinese', ko: 'Korean',
+  pl: 'Polish', ru: 'Russian', ca: 'Catalan', el: 'Greek', cs: 'Czech', hu: 'Hungarian', tr: 'Turkish', ar: 'Arabic',
+};
+const KIND_NAMES = { official: 'Official releases', hack: 'ROM hacks', homebrew: 'Homebrew' };
+
+/** Does a row pass the dropdown filters (optionally ignoring one of them)? */
+function passesFacets(r, skip = null) {
+  if (skip !== 'system' && facets.system && r.system !== facets.system) return false;
+  if (skip !== 'language' && facets.language && !(r.languages || []).includes(facets.language)) return false;
+  if (skip !== 'kind' && facets.kind && r.kind !== facets.kind) return false;
+  if (skip !== 'players' && facets.players === 'single' && r.players !== 1) return false;
+  if (skip !== 'players' && facets.players === 'multi' && !(r.players >= 2)) return false;
+  if (skip !== 'genre' && facets.genre && r.genre !== facets.genre) return false;
+  return true;
+}
+
+function facetBar(rows) {
+  // Each dropdown counts games that match the *other* filters, so the numbers
+  // say what you'd get by picking that option.
+  const tally = (key, valuesOf) => {
+    const m = new Map();
+    for (const r of rows) if (passesFacets(r, key)) for (const v of valuesOf(r)) if (v) m.set(v, (m.get(v) || 0) + 1);
+    return m;
+  };
+  const select = (key, anyLabel, options) => h('select', {
+    class: `facet ${facets[key] ? 'active' : ''}`, 'aria-label': anyLabel,
+    onchange: (e) => { facets[key] = e.target.value; renderGames(); },
+  },
+  h('option', { value: '' }, anyLabel),
+  options.map(([value, label, n]) => h('option', { value, selected: facets[key] === value }, `${label} (${n})`)));
+  const byCount = (m, names = {}) => [...m].sort((a, b) => b[1] - a[1]).map(([v, n]) => [v, names[v] || v, n]);
+  const byName = (m) => [...m].sort((a, b) => a[0].localeCompare(b[0])).map(([v, n]) => [v, v, n]);
+  const players = tally('players', (r) => [r.players === 1 ? 'single' : r.players >= 2 ? 'multi' : null]);
+  const anySet = Object.values(facets).some(Boolean);
+  return h('div', { class: 'facets' },
+    select('system', 'All systems', byName(tally('system', (r) => [r.system]))),
+    select('language', 'Any language', byCount(tally('language', (r) => r.languages || []), LANG_NAMES)),
+    select('kind', 'Official, hacks & homebrew', ['official', 'hack', 'homebrew']
+      .map((k) => [k, KIND_NAMES[k], tally('kind', (r) => [r.kind]).get(k) || 0])),
+    select('players', 'Any number of players', [['single', 'Single player', players.get('single') || 0], ['multi', 'Multiplayer (2+)', players.get('multi') || 0]]),
+    select('genre', 'Any genre', byName(tally('genre', (r) => [r.genre]))),
+    anySet ? h('button', { class: 'btn small', onclick: () => { for (const k of Object.keys(facets)) facets[k] = ''; renderGames(); } }, 'Clear filters') : null);
+}
+
 function filteredRows() {
   if (!lib) return [];
   const q = query.trim().toLowerCase();
   const rows = lib.rows.filter((r) => {
     if (q && !r.path.toLowerCase().includes(q) && !gameTitle(r.path).toLowerCase().includes(q)) return false;
+    if (!passesFacets(r)) return false;
     if (filter === 'fav') return r.favorite;
     if (filter === 'recent') return Boolean(r.lastPlayed);
     if (filter === 'ready') return r.status === 'both';
@@ -436,7 +508,12 @@ function gameRow(r) {
       onclick: () => act(() => rc.suggest((r.mine || r.theirs).sha256), { success: `Suggested to ${buddyName()}` }),
     }, 'Suggest'));
   }
-  const core = r.coreName ? r.coreName.replace(/_libretro$/, '') : 'no core set';
+  const core = [
+    r.coreName ? r.coreName.replace(/_libretro$/, '') : 'no core set',
+    r.players === 1 ? '1 player' : r.players ? `${r.players} players` : null,
+    r.genre || null,
+    r.kind === 'hack' ? 'hack' : r.kind === 'homebrew' ? 'homebrew' : null,
+  ].filter(Boolean).join(' · ');
   const entry = r.mine || r.theirs;
   return h('div', { class: 'game' },
     cover(r),
@@ -485,6 +562,7 @@ function renderGames() {
         class: `chip ${filter === key ? 'active' : ''}`,
         onclick: () => { filter = key; renderGames(); },
       }, label, h('span', { class: 'count' }, n))))),
+    facetBar(rows),
     pickCard(),
     h('div', { id: 'game-list', class: 'games' }));
   renderGameList();
@@ -529,6 +607,43 @@ function modeHelp(cfg) {
     'On the same Wi-Fi, use the LAN address. Over the internet, whoever hosts forwards these TCP ports on their router: ',
     h('b', {}, `${cfg.syncPort}`), ' (file sync) and ', h('b', {}, `${cfg.netplayPort}`),
     ' (netplay). Use their public IP as the address. Files travel unencrypted in this mode; Tailscale is safer.');
+}
+
+// This PC's internet address, looked up by the app (no "what is my IP" site needed).
+let publicIp = { address: null, error: null, loading: false };
+
+function loadPublicIp(refresh = false) {
+  if (publicIp.loading) return;
+  publicIp = { ...publicIp, loading: true, error: null };
+  renderConnect();
+  rc.publicIp({ refresh })
+    .then((r) => { publicIp = { address: r.address, error: null, loading: false }; })
+    .catch((err) => { publicIp = { address: null, error: err.message, loading: false }; })
+    .then(() => { if (view === 'buddy') renderConnect(); });
+}
+
+function publicIpRow(cfg) {
+  // Direct mode over the internet is when your buddy needs it: look it up right away.
+  if (cfg.connectionMode === 'direct' && !publicIp.address && !publicIp.error && !publicIp.loading) {
+    setTimeout(() => loadPublicIp(), 0);
+  }
+  const tag = h('span', { class: 'tag' }, 'Internet');
+  let body;
+  if (publicIp.address) {
+    body = [h('span', { class: 'mono' }, publicIp.address), tag,
+      h('button', { class: 'link-btn small', onclick: () => act(() => rc.copy(publicIp.address), { success: 'Copied' }) }, 'Copy')];
+  } else if (publicIp.loading) {
+    body = [h('span', { class: 'muted small' }, 'Looking up your internet address…'), tag];
+  } else {
+    body = [h('button', { class: 'link-btn small', onclick: () => loadPublicIp(true) }, publicIp.error ? 'Try again' : 'Show my internet address'), tag];
+  }
+  return [
+    h('div', { class: 'addr' }, body),
+    publicIp.error ? h('div', { class: 'hint small', style: 'color:var(--bad)' }, publicIp.error) : null,
+    h('div', { class: 'hint small muted' }, cfg.connectionMode === 'tailscale'
+      ? 'With Tailscale, send the Tailscale address. The internet address is only for Direct mode.'
+      : 'On the same Wi-Fi, send the LAN address. Over the internet, send the Internet one (the host also needs the ports forwarded).'),
+  ];
 }
 
 function renderConnect() {
@@ -579,7 +694,7 @@ function renderConnect() {
             h('span', { class: 'mono' }, a.address), h('span', { class: 'tag' }, a.kind === 'tailscale' ? 'Tailscale' : 'LAN'),
             h('button', { class: 'link-btn small', onclick: () => act(() => rc.copy(a.address), { success: 'Copied' }) }, 'Copy')))
           : h('div', { class: 'muted small' }, 'No network found'),
-        h('div', { class: 'hint small muted' }, 'Over the internet without Tailscale, give them your public IP instead (search "what is my IP").'),
+        publicIpRow(cfg),
         h('div', { class: 'field', style: 'margin-top:14px' },
           h('div', { class: 'label' }, 'Shared secret'),
           h('div', { class: 'row' },
@@ -592,8 +707,41 @@ function renderConnect() {
             ? `On, port ${S.server.port}`
             : (S.server.error ? h('span', { style: 'color:var(--bad)' }, S.server.error) : 'Off')),
           h('dt', {}, 'Your system'), h('dd', {}, S.platform)))),
+    cfg.connectionMode === 'direct' ? portCheckCard() : null,
     connectionCheckCard(),
     discordCard());
+}
+
+/** Direct mode: are this PC's ports open from the internet? Works without the buddy. */
+function portCheckCard() {
+  const r = S.portCheck;
+  const lan = (S.addresses.find((a) => a.kind === 'lan') || {}).address || 'this PC';
+  let body = h('p', { class: 'muted small', style: 'margin:0' },
+    `Whoever hosts over the internet needs TCP ${S.config.syncPort} (file sync) and ${S.config.netplayPort} (netplay) open. `,
+    'This asks portchecker.io to try them from outside, so it sees your internet address. Your buddy doesn\'t need to be online.');
+  if (r && r.running) body = h('div', { class: 'pad-waiting', style: 'margin:0' }, h('span', { class: 'pulse' }), 'Checking from the internet… (up to 20 seconds)');
+  else if (r && r.error) body = h('div', { class: 'bad-text' }, r.error);
+  else if (r && r.ports) {
+    const closed = r.ports.filter((p) => !p.open);
+    body = h('div', { class: 'checks' },
+      r.ports.map((p) => h('div', { class: 'check-line' },
+        h('span', { class: p.open ? 'ok-text' : 'bad-text' }, p.open ? '✓' : '✗'),
+        h('div', {}, h('b', {}, `Port ${p.port}: ${p.open ? 'open' : 'closed'}`), h('div', { class: 'muted small' }, p.purpose),
+          p.listening === false ? h('div', { class: 'muted small' }, `Couldn't test it: ${p.error}. Close whatever is using it.`) : null))),
+      closed.length
+        ? h('div', { class: 'callout' }, h('b', {}, 'To open them:'),
+          h('ol', { class: 'tight' },
+            h('li', {}, `On your router (usually http://192.168.1.1 or 10.0.0.1), forward TCP ${closed.map((p) => p.port).join(' and ')} to ${lan}.`),
+            h('li', {}, 'When Windows Firewall asks about RetroConnect or RetroArch, click Allow.'),
+            h('li', {}, 'Some internet providers share one address between customers (CGNAT); then forwarding can\'t work. Use Tailscale instead.')))
+        : h('div', { class: 'ok-text small' }, `Your buddy can reach you at ${r.publicIp}.`),
+      h('div', { class: 'muted small' }, `Checked ${new Date(r.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} for ${r.publicIp}`));
+  }
+  return h('div', { class: 'card', style: 'margin-top:16px' },
+    h('div', { class: 'row' }, h('h2', { style: 'margin:0;flex:1' }, 'Are my ports open?'),
+      h('button', { class: 'btn', disabled: Boolean(r && r.running), onclick: () => act(() => rc.checkPorts()) },
+        r && r.at ? 'Check again' : 'Check my ports')),
+    h('div', { style: 'margin-top:10px' }, body));
 }
 
 function compatNotes() {
@@ -709,6 +857,9 @@ function renderSettings() {
           h('div', { class: 'field', style: 'flex:1' }, h('label', {}, 'Sync port'),
             h('input', { type: 'number', value: d.syncPort, oninput: bind('syncPort', Number) }))),
         lagField(d),
+        h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: d.retroEffects, onchange: bind('retroEffects') }),
+          h('div', {}, h('div', {}, h('b', {}, 'Retro effects')),
+            h('div', { class: 'muted small' }, 'Moving neon grid and CRT scanlines. Turn off for a still background (also off if Windows has animations turned off).'))),
         h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: d.showBoxArt, onchange: bind('showBoxArt') }),
           h('div', {}, h('div', {}, h('b', {}, 'Show box art')),
             h('div', { class: 'muted small' }, 'Covers come from libretro\'s thumbnail server (the one RetroArch uses), looked up by game name, and are stored on this PC.'))),
@@ -1172,6 +1323,7 @@ async function boot() {
   rc.onState((s) => {
     const prev = S;
     S = s;
+    document.body.classList.toggle('no-fx', s.config.retroEffects === false);
     // Reload the merged game list when the buddy comes online / goes away.
     const key = `${s.buddy.status}:${s.buddy.romCount || 0}:${s.config.romsDir}`;
     if (key !== lastBuddyKey) { lastBuddyKey = key; loadLibrary().catch(() => {}); }

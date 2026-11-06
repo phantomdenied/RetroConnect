@@ -26,7 +26,7 @@ function netplayOverrides(cfg, role, extra = {}) {
  * role is "host" or "guest". Guests in relay mode load the game and join from
  * RetroArch's lobby, since a relay session only gets its ID at runtime.
  */
-function buildCommand(cfg, role, corePath, romPath, { connectTo = null, port = null, overridesPath = null } = {}) {
+function buildCommand(cfg, role, corePath, romPath, { connectTo = null, port = null, overridesPath = null, logFile = null } = {}) {
   const ra = config.retroarchCmd(cfg);
   if (!ra.length) throw new Error("Couldn't find RetroArch. Set its location in Settings.");
   const args = [...ra.slice(1), '-L', corePath, romPath];
@@ -39,6 +39,8 @@ function buildCommand(cfg, role, corePath, romPath, { connectTo = null, port = n
   }
   args.push('--nick', cfg.nickname);
   if (overridesPath) args.push('--appendconfig', overridesPath);
+  // RetroConnect follows the log to see who is Player 1/2 (for swapping players).
+  if (logFile) args.push('--verbose', '--log-file', logFile);
   return [ra[0], args];
 }
 
@@ -49,7 +51,7 @@ function run(cfg, role, corePath, romPath, opts = {}, { onSpawn } = {}) {
   const cleanup = () => fs.rm(tmp, { force: true }, () => {});
   let exe, args;
   try {
-    [exe, args] = buildCommand(cfg, role, corePath, romPath, { connectTo: opts.connectTo, port: opts.port, overridesPath: tmp });
+    [exe, args] = buildCommand(cfg, role, corePath, romPath, { connectTo: opts.connectTo, port: opts.port, overridesPath: tmp, logFile: opts.logFile });
   } catch (err) {
     cleanup();
     return Promise.reject(err);

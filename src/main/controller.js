@@ -20,6 +20,9 @@ const { fetchCoreFromBuildbot, HttpError } = require('./sync');
 const netcheck = require('./netcheck');
 const savesLib = require('./saves');
 const { ThumbCache } = require('./thumbnails');
+const gameinfo = require('./gameinfo');
+const systems = require('./systems');
+const netplayControl = require('./netplay-control');
 const { backupExisting } = require('./sync');
 const { SyncServer } = require('./server');
 const { HostClient, Syncer, SyncError, compare } = require('./sync');
@@ -46,12 +49,34 @@ function localAddresses() {
   return out;
 }
 
+// Services that answer with the caller's public IPv4 address as plain text.
+const PUBLIC_IP_URLS = ['https://api.ipify.org', 'https://ipv4.icanhazip.com'];
+const PUBLIC_IP_TTL_MS = 10 * 60e3;
+
+/** This PC's internet (public) IPv4 address, as the outside world sees it. */
+async function lookupPublicIp(fetchImpl, urls = PUBLIC_IP_URLS) {
+  let lastErr = null;
+  for (const url of urls) {
+    try {
+      const res = await fetchImpl(url, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const ip = (await res.text()).trim();
+      if (/^(\d{1,3}\.){3}\d{1,3}$/.test(ip) && ip.split('.').every((n) => Number(n) <= 255)) return ip;
+      throw new Error('unexpected answer');
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw new Error(`Couldn't look up your internet address (${lastErr ? lastErr.message : 'no service'}). Are you online?`);
+}
+
 class Controller extends EventEmitter {
   constructor({
     dataDir, version = '0', pollMs = POLL_MS, launch = launcher.run, fetchCore,
     retroarchDir = path.join(dataDir, 'RetroArch'), installer = raInstaller,
     tailscale = tailscaleLib,
     updateFeedDefault = '', fetchImpl = globalThis.fetch, resizeImage = null,
+    netplaySend = netplayControl.sendCommand,
   } = {}) {
     super();
     this.dataDir = dataDir;
@@ -61,6 +86,8 @@ class Controller extends EventEmitter {
     this.pollMs = pollMs;
     this.launch = launch;
     this.fetchCore = fetchCore;
+    this.netplaySend = netplaySend; // RetroArch network commands (swap players)
+    this.netplay = null; // NetplayLog of the running game
     this.cfg = null;
     this.library = null;
     this.server = null;
@@ -94,6 +121,7 @@ class Controller extends EventEmitter {
     this.compat = null; // "will joining this session work?" summary
     this.rtt = []; // recent round-trip times to the buddy (ms), from polling
     this.thumbs = new ThumbCache(path.join(dataDir, 'thumbs'), { fetchImpl, resize: resizeImage });
+    this.gameInfo = new gameinfo.GameInfoDb(path.join(dataDir, 'gameinfo'), { fetchImpl });
     this.historyFile = path.join(dataDir, 'history.json');
     this.history = { favorites: [], plays: [] };
   }
@@ -115,6 +143,7 @@ class Controller extends EventEmitter {
     if (this.testListener) this.testListener.close();
     if (this.tsLogin && this.tsLogin.child) this.tsLogin.child.kill();
     if (this.hosting && this.hosting.child) this.hosting.child.kill();
+    this.stopNetplayLog();
     if (this.server) await this.server.stop();
     this.server = null;
   }
@@ -153,6 +182,7 @@ class Controller extends EventEmitter {
       server.discordUrl = this.cfg.discordUrl;
       server.versions = { app: this.version, retroarch: this.raVersion };
       server.onNetplayProbe = () => this.openNetplayProbe();
+    server.onSwapPoll = (request) => this.onSwapPoll(request);
       server.onProbeBack = (addr, port) => netcheck.tcpReachable(addr, port);
       server.onSaveLookup = (sha) => this.lookupSave(sha);
       this.server = server;
@@ -187,6 +217,7 @@ class Controller extends EventEmitter {
       buddy: this.buddy,
       hosting: this.hosting ? { rom: this.hosting.rom, core: this.hosting.core } : null,
       playing: this.playing,
+      netplay: this.netplayState(),
       busy: this.busy,
       update: this.update,
       updateFeed: this.updateFeed(),
@@ -194,6 +225,7 @@ class Controller extends EventEmitter {
       mySuggestion: this.mySuggestion || null,
       controllers: this.ctrl,
       connCheck: this.connCheck,
+      portCheck: this.portCheck || null,
       lag: this.lagInfo(),
       compat: this.compat,
       tailscale: {
@@ -325,14 +357,21 @@ class Controller extends EventEmitter {
     const favs = new Set(this.history.favorites);
     const stats = this.playStats();
     const rows = compare(local, this.buddyManifest).map((row) => {
-      const ext = path.extname(row.path);
-      const coreName = config.coreForExtension(this.cfg, ext);
+      const coreName = config.coreForRom(this.cfg, row.path);
       const sha = (row.mine || row.theirs).sha256;
       const st = stats.get(sha);
+      const entry = row.mine || row.theirs;
+      const info = this.gameInfo.lookup(row.path, entry.crc32);
       return {
         ...row,
         sha,
         coreName,
+        system: gameinfo.systemLabel(row.path),
+        systemShort: systems.shortSystemForRom(row.path),
+        languages: gameinfo.languagesOf(row.path),
+        kind: gameinfo.kindOf(row.path),
+        players: info.players,
+        genre: info.genre,
         coreInstalled: Boolean(coreName && local.cores.some((c) => c.name === coreName)),
         thumb: this.cfg.showBoxArt && this.thumbs.has(sha),
         favorite: favs.has(sha),
@@ -341,6 +380,11 @@ class Controller extends EventEmitter {
         minutesPlayed: st ? st.minutes : 0,
       };
     });
+    // Player counts and genres: fetch each system's data once in the background;
+    // 'gameinfo' makes the window reload the list when it arrives.
+    for (const sys of new Set(rows.map((r) => this.gameInfo.lookup(r.path).system).filter(Boolean))) {
+      this.gameInfo.ensure(sys).then((fresh) => { if (fresh) this.emit('gameinfo', sys); });
+    }
     if (this.cfg.showBoxArt) {
       // Fetch missing covers in the background; the window refreshes as they arrive.
       for (const r of rows) {
@@ -348,6 +392,14 @@ class Controller extends EventEmitter {
       }
     }
     return { rows, cores: local.cores, buddyOnline: Boolean(this.buddyManifest), romsDir: this.cfg.romsDir };
+  }
+
+  /** { address, at } of this PC's internet address; cached for a few minutes. */
+  async publicAddress({ refresh = false } = {}) {
+    const c = this.publicIpCache;
+    if (!refresh && c && Date.now() - c.at < PUBLIC_IP_TTL_MS) return c;
+    this.publicIpCache = { address: await lookupPublicIp(this.fetchImpl), at: Date.now() };
+    return this.publicIpCache;
   }
 
   thumbFile(sha) {
@@ -550,6 +602,46 @@ class Controller extends EventEmitter {
     return result;
   }
 
+  /**
+   * "Are my ports open from the internet?" for whoever hosts in Direct mode,
+   * without needing the buddy: make sure something is listening on both ports,
+   * then have an outside service try to connect to this PC's internet address.
+   */
+  async checkMyPorts() {
+    if (this.portCheck && this.portCheck.running) throw new Error('Already checking');
+    this.portCheck = { running: true };
+    this.emitState();
+    const result = { running: false, at: Date.now(), ports: [] };
+    const temp = [];
+    try {
+      const { address } = await this.publicAddress();
+      result.publicIp = address;
+      const wanted = [
+        { port: this.cfg.syncPort, purpose: 'file sync (RetroConnect)' },
+        { port: this.cfg.netplayPort, purpose: 'netplay (RetroArch)' },
+      ];
+      for (const w of wanted) {
+        // Already served: the sync server (while sharing/hosting) or RetroArch (while hosting).
+        const busy = (w.port === this.cfg.syncPort && this.server) || (w.port === this.cfg.netplayPort && this.hosting);
+        if (busy) { w.listening = true; continue; }
+        const l = await netcheck.openTestListener(w.port, 40000);
+        w.listening = l.listening;
+        if (l.listening) temp.push(l); else w.error = l.error;
+      }
+      const open = await netcheck.checkPortsFromInternet(this.fetchImpl, address, wanted.map((w) => w.port));
+      for (const w of wanted) result.ports.push({ ...w, open: Boolean(open[w.port]) });
+      this.log(`Port check from the internet (${address}): ${result.ports.map((p) => `${p.port} ${p.open ? 'open' : 'closed'}`).join(', ')}`);
+    } catch (err) {
+      result.error = err.message;
+    } finally {
+      for (const l of temp) l.close();
+    }
+    this.portCheck = result;
+    this.emitState();
+    if (result.error) throw new Error(`Couldn't check your ports: ${result.error}`);
+    return result;
+  }
+
   /** Before joining: RetroArch/core/app versions on both sides. */
   async joinCompat(session) {
     const out = { startedAt: session.started_at, warnings: [] };
@@ -642,11 +734,25 @@ class Controller extends EventEmitter {
     return this.refreshControllers();
   }
 
-  /** Extra RetroArch settings for this launch: controller driver, players, netplay slot. */
-  async launchOverrides(netplaySlot) {
+  /**
+   * Extra RetroArch settings for this launch: controller driver, players, and
+   * what swapping players needs. No fixed netplay port is requested
+   * (netplay_request_device_pN), because a request sticks: after a swap
+   * RetroArch would put everyone back where they asked to be. Instead whoever
+   * steps in first gets Player 1, so a host who wants to be Player 2 starts
+   * out watching and steps in once their buddy has joined.
+   */
+  async launchOverrides({ startWatching = false } = {}) {
     let report = this.ctrl;
     try { report = await this.refreshControllers(); } catch { /* use what we have */ }
-    const out = { input_autodetect_enable: 'true', ...raSetup.netplaySlotSettings(netplaySlot) };
+    const out = {
+      input_autodetect_enable: 'true',
+      ...raSetup.netplaySlotSettings(null),
+      netplay_start_as_spectator: startWatching ? 'true' : 'false',
+      network_cmd_enable: 'true', // NETPLAY_GAME_WATCH for swapping players (localhost UDP)
+      network_cmd_port: String(netplayControl.DEFAULT_CMD_PORT),
+      frontend_log_level: '1', // the log RetroConnect follows: INFO and up is enough
+    };
     const lag = this.lagInfo();
     if (lag.frames !== null) {
       out.netplay_input_latency_frames_min = String(lag.frames);
@@ -655,6 +761,136 @@ class Controller extends EventEmitter {
     if (report && report.driver) out.input_joypad_driver = report.driver;
     if (report && Object.keys(this.padData.assign).length) Object.assign(out, raSetup.reservationSettings(report.pads, this.padData.assign));
     return out;
+  }
+
+  // ----- player numbers during a game (swap players) --------------------------
+  //
+  // Both apps follow their own RetroArch's log. The host runs a swap: everyone
+  // steps out to watch, then whoever should be Player 1 steps back in first
+  // (RetroArch gives the lowest free port). The guest's app follows the host's
+  // instructions from GET /api/swap, and asks for a swap with ?request=1.
+
+  startNetplayLog() {
+    this.stopNetplayLog();
+    const file = path.join(os.tmpdir(), `retroconnect-ra-${process.pid}-${Date.now()}.log`);
+    this.netplay = new netplayControl.NetplayLog(file);
+    this.netplay.on('change', (s) => {
+      this.log(s.me ? `You're Player ${s.me}` : 'You\'re watching (not playing)');
+      this.emitState();
+    });
+    return file;
+  }
+
+  stopNetplayLog() {
+    if (!this.netplay) return;
+    this.netplay.close();
+    const file = this.netplay.file;
+    this.netplay = null;
+    clearInterval(this.swapFollowTimer);
+    this.swapFollowTimer = null;
+    setTimeout(() => require('fs').rm(file, { force: true }, () => {}), 2000);
+  }
+
+  setNetplayPlaying(want, opts = {}) {
+    if (!this.netplay) throw new Error('No game running');
+    return netplayControl.setPlaying(this.netplay, want, { send: this.netplaySend, ...opts });
+  }
+
+  /** What the UI shows: your player number and whether a swap is running. */
+  netplayState() {
+    if (!this.netplay || (!this.hosting && !this.playing)) return null;
+    return { me: this.netplay.me, other: this.netplay.otherPort(), swapping: Boolean(this.swapRunning || this.swapAsked) };
+  }
+
+  /** Tell the guest's app to play or watch (it polls /api/swap). */
+  publishGuest(mode) {
+    this.swapState = { seq: (this.swapState ? this.swapState.seq : 0) + 1, guest: mode };
+  }
+
+  /** Swap Player 1 and Player 2. On the guest's side this asks the host to do it. */
+  async swapPlayers() {
+    if (this.playing && !this.hosting) {
+      if (!this.netplay) throw new Error('No game running');
+      this.swapAsked = true; // sent with the next /api/swap poll
+      this.emitState();
+      return { requested: true };
+    }
+    if (!this.hosting || !this.netplay) throw new Error('Start a game first');
+    if (this.swapRunning) throw new Error('Already swapping players');
+    const log = this.netplay;
+    log.poll();
+    if (![...log.others.keys()].length) throw new Error(`${this.buddy.nickname || 'Your buddy'} hasn't joined the game yet`);
+    this.swapRunning = true;
+    this.emitState();
+    const othersOut = (s) => !Object.values(s.others).some(Boolean);
+    try {
+      const hostWasP1 = log.me === 1;
+      // 1. Everyone steps out.
+      this.publishGuest('spectate');
+      await this.setNetplayPlaying(false);
+      await log.waitFor(othersOut);
+      // 2. The new Player 1 steps in first, then the other.
+      if (hostWasP1) {
+        this.publishGuest('play');
+        await log.waitFor((s) => Object.values(s.others).includes(1));
+        await this.setNetplayPlaying(true);
+      } else {
+        await this.setNetplayPlaying(true);
+        this.publishGuest('play');
+        await log.waitFor((s) => Object.values(s.others).some(Boolean));
+      }
+      this.log(`Swapped players: you're Player ${log.me} now`);
+      return log.snapshot();
+    } catch (err) {
+      // Don't leave anyone stuck watching.
+      this.publishGuest('play');
+      try { await this.setNetplayPlaying(true, { timeoutMs: 5000 }); } catch { /* best effort */ }
+      throw new Error(`Couldn't swap players: ${err.message}`);
+    } finally {
+      this.swapRunning = false;
+      this.emitState();
+    }
+  }
+
+  /** GET /api/swap from the guest's app: the current instruction, and maybe a swap request. */
+  onSwapPoll(request) {
+    if (!this.hosting) return { error: 'not hosting' };
+    if (request && !this.swapRunning) {
+      this.swapPlayers().catch((err) => this.log(err.message, 'warn'));
+    }
+    return { ...(this.swapState || { seq: 0, guest: 'play' }), swapping: Boolean(this.swapRunning) };
+  }
+
+  /** Guest: follow the host's play/watch instructions while the game runs. */
+  followHostSwaps(client, intervalMs = 700) {
+    clearInterval(this.swapFollowTimer);
+    let lastSeq = 0;
+    let busy = false;
+    this.swapAsked = false;
+    this.swapFollowTimer = setInterval(async () => {
+      if (busy || !this.netplay) return;
+      busy = true;
+      try {
+        const ask = this.swapAsked;
+        const r = await client.getJson(`/api/swap${ask ? '?request=1' : ''}`);
+        if (ask) { this.swapAsked = false; this.emitState(); }
+        if (r && r.seq > lastSeq) {
+          lastSeq = r.seq;
+          await this.setNetplayPlaying(r.guest === 'play');
+        }
+      } catch (err) {
+        if (err instanceof HttpError && err.status === 404) {
+          // The host's app predates swapping players: stop asking.
+          clearInterval(this.swapFollowTimer);
+          if (this.swapAsked) this.log('Your buddy needs to update RetroConnect to swap players', 'warn');
+          this.swapAsked = false;
+          this.emitState();
+        }
+      } finally {
+        busy = false;
+      }
+    }, intervalMs);
+    this.swapFollowTimer.unref();
   }
 
   // ----- suggestions & Discord ------------------------------------------------
@@ -961,7 +1197,7 @@ class Controller extends EventEmitter {
     if (this.hosting) throw new Error("You're already hosting a game");
     const rom = await this.library.findRomBySha(romSha);
     if (!rom) throw new Error('That game is no longer in your ROM folder');
-    let coreName = coreOverride || config.coreForExtension(this.cfg, path.extname(rom.path));
+    let coreName = coreOverride || config.coreForRom(this.cfg, rom.path);
     if (!coreName) throw new Error(`No core is set for ${path.extname(rom.path)} files. Pick one in Settings → Cores.`);
     if (!coreName.endsWith('_libretro')) coreName += '_libretro';
     const core = await this.library.findCore(coreName);
@@ -999,11 +1235,22 @@ class Controller extends EventEmitter {
     } catch (err) {
       this.log(`Couldn't check your buddy's save: ${err.message}`, 'warn');
     }
-    const overrides = await this.launchOverrides(this.cfg.hostPlayer);
+    const hostAsP2 = this.cfg.hostPlayer === 2;
+    const overrides = await this.launchOverrides({ startWatching: hostAsP2 });
     const play = this.startPlay(rom, 'host', this.buddy.nickname);
-    const done = this.launch(this.cfg, 'host', this.library.corePath(core), this.library.romPath(rom), { overrides },
+    const logFile = this.startNetplayLog();
+    this.swapState = { seq: 0, guest: 'play' };
+    // "When I host, Player 1 is: my buddy": step in once they've taken Player 1.
+    if (hostAsP2) {
+      const log = this.netplay;
+      log.waitFor((s) => Object.values(s.others).includes(1), 30 * 60e3)
+        .then(() => (this.netplay === log ? this.setNetplayPlaying(true) : null))
+        .catch(() => {});
+    }
+    const done = this.launch(this.cfg, 'host', this.library.corePath(core), this.library.romPath(rom), { overrides, logFile },
       { onSpawn: (child) => { if (this.hosting) this.hosting.child = child; } });
     done.catch((err) => this.log(err.message, 'error')).finally(async () => {
+      this.stopNetplayLog();
       this.endPlay(play);
       if (this.server) this.server.session = null;
       this.hosting = null;
@@ -1043,15 +1290,16 @@ class Controller extends EventEmitter {
       }
       this.playing = { rom: session.rom, core: session.core, host: session.host_nickname };
       this.emitState();
-      // The guest takes whichever player the host didn't (old hosts: no preference).
-      const hostPlayer = Number(session.host_player);
-      const slot = hostPlayer === 1 ? 2 : hostPlayer === 2 ? 1 : null;
-      const overrides = await this.launchOverrides(slot);
+      // Player numbers: whoever is playing first gets Player 1. The host sets
+      // that up (see host()), so the guest asks for no particular port.
+      const overrides = await this.launchOverrides();
       const play = this.startPlay(session.rom, 'guest', session.host_nickname);
+      const logFile = this.startNetplayLog();
+      this.followHostSwaps(client);
       this.launch(cfg, 'guest', result.corePath, result.romPath,
-        { connectTo: this.cfg.peerAddress, port: session.netplay_port, overrides })
+        { connectTo: this.cfg.peerAddress, port: session.netplay_port, overrides, logFile })
         .catch((err) => this.log(err.message, 'error'))
-        .finally(() => { this.endPlay(play); this.playing = null; this.emitState(); });
+        .finally(() => { this.stopNetplayLog(); this.endPlay(play); this.playing = null; this.emitState(); });
       return { warnings: result.warnings, downloaded: result.downloaded };
     });
   }
@@ -1074,4 +1322,4 @@ class Controller extends EventEmitter {
   }
 }
 
-module.exports = { Controller, localAddresses, isTailscaleIp };
+module.exports = { Controller, localAddresses, isTailscaleIp, lookupPublicIp };

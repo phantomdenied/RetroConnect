@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const platforms = require('./platforms');
+const systems = require('./systems');
 
 const CONNECTION_MODES = ['direct', 'tailscale', 'relay'];
 const RELAY_SERVERS = ['nyc', 'madrid', 'saopaulo', 'singapore'];
@@ -19,6 +20,11 @@ const DEFAULT_CORE_MAP = {
   gb: 'gambatte_libretro', gbc: 'gambatte_libretro', gba: 'mgba_libretro',
   pce: 'mednafen_pce_fast_libretro', a26: 'stella_libretro', zip: 'fbneo_libretro',
   n64: 'mupen64plus_next_libretro', z64: 'mupen64plus_next_libretro', v64: 'mupen64plus_next_libretro',
+  // Systems mostly recognised by folder name (see systems.js).
+  '32x': 'picodrive_libretro', segacd: 'genesis_plus_gx_libretro',
+  sgx: 'mednafen_supergrafx_libretro', lnx: 'handy_libretro', j64: 'virtualjaguar_libretro',
+  a78: 'prosystem_libretro', d64: 'vice_x64sc_libretro', psx: 'pcsx_rearmed_libretro',
+  gcm: 'dolphin_libretro',
 };
 
 function defaults() {
@@ -42,6 +48,7 @@ function defaults() {
     lagFrames: -1, // netplay input delay frames: -1 = automatic from ping, 0 = off
     shareSaves: true, // pull your buddy's newer battery save before hosting
     showBoxArt: true, // fetch covers from libretro's thumbnail server
+    retroEffects: true, // synthwave theme: moving grid, CRT scanlines (off = still background)
     discordUrl: '', // invite or channel link for the Discord you both hang out in
     updateFeedUrl: '', // public JSON announcing new versions (overrides the built-in one)
   };
@@ -137,6 +144,12 @@ function coreForExtension(cfg, ext) {
   return cfg.coreMap[String(ext).toLowerCase().replace(/^\./, '')] || null;
 }
 
+/** Core for a ROM: by the system its folders name, else by its extension. */
+function coreForRom(cfg, romPath) {
+  const key = systems.coreKeyForRom(romPath);
+  return (key && cfg.coreMap[key]) || coreForExtension(cfg, path.extname(String(romPath)));
+}
+
 function isConfigured(cfg) {
   return Boolean(cfg.sharedSecret && cfg.romsDir);
 }
@@ -144,5 +157,5 @@ function isConfigured(cfg) {
 module.exports = {
   CONNECTION_MODES, RELAY_SERVERS, DEFAULT_CORE_MAP,
   defaults, normalize, load, save, generateSecret, isDiscordUrl,
-  retroarchCmd, coresPath, coreForExtension, isConfigured,
+  retroarchCmd, coresPath, coreForExtension, coreForRom, isConfigured,
 };

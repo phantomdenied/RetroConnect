@@ -25,11 +25,25 @@ mismatched files. Then RetroArch launches and connects for both of you.
 - **Box art and clean names**: covers from libretro's thumbnail server (the
   one RetroArch uses), and "The Legend of Zelda - A Link to the Past" instead
   of `Legend of Zelda, The - A Link to the Past (USA) [!].sfc`.
+- **Right emulator for zipped games**: the core is picked from the system
+  folder a game is in ("Nintendo - Super Nintendo Entertainment System", "SNES",
+  "Genesis", ...), so zipped sets work; otherwise from the file extension.
+  Settings → Cores still decides which core each system uses.
+- **Filters**: system, language, official / ROM hacks / homebrew, single
+  player / multiplayer and genre. Player counts and genres come from
+  libretro's game database (the one RetroArch uses), downloaded once per
+  system; system, language and hacks come from folder names and name tags.
+- **⇄ Swap players** during a game: Player 1 and Player 2 trade places without
+  restarting, for taking turns in single-player games. Either of you can press it.
 - **★ Favorites and Recently played**: star games, see when you last played
   them and how often. "Pick a game for us" favors favorites and games you
   haven't played lately.
 - **Connection check** (Connect page): ping to your buddy, and whether each of
   you can reach the other's netplay port, with fixes if not.
+- **Your internet address and port check** (Connect page, Direct mode): the
+  app shows your internet IP with a Copy button (no "what is my IP" site), and
+  **Check my ports** tests 55440 and 55435 from outside (via portchecker.io)
+  before your buddy even connects.
 - **Version warnings**: the join banner warns when your RetroArch, core or
   RetroConnect versions differ, with a button to install the host's exact
   RetroArch version.
@@ -107,12 +121,19 @@ them. On every **Host** and **Join** it:
 
 The RetroArch page shows all of this per controller, with a live button test.
 
-**Who's Player 1 online?** RetroArch already sorts this out: whoever hosts is
-Player 1 and the person joining is Player 2, and each of you plays with your
-own controller whatever number you are. To flip it, use **When I host,
-Player 1 is: me / <friend>** on the Games page. RetroConnect asks RetroArch
-for the right slots on both sides (`netplay_request_device_pN`), and the join
-banner says "You'll be Player 1/2".
+**Who's Player 1 online?** Whoever hosts is Player 1 and the person joining is
+Player 2, and each of you plays with your own controller whatever number you
+are. To flip it, use **When I host, Player 1 is: me / <friend>** on the Games
+page: the host then starts out watching, your friend joins as Player 1, and
+the host steps in as Player 2. The join banner says "You'll be Player 1/2".
+
+**Taking turns:** press **⇄ Swap players** in the game banner (either of you)
+and Player 1 and 2 trade places a second later, game still running. Under the
+hood both RetroArchs step out to watch (`NETPLAY_GAME_WATCH` over RetroArch's
+local command port) and the new Player 1 steps back in first; RetroArch gives
+the lowest free player number. That's also why RetroConnect no longer asks
+RetroArch for fixed slots (`netplay_request_device_pN`): they would undo a
+swap. Both of you need RetroConnect 0.7.1 or newer for swapping.
 
 **Several controllers on one PC?** Set **Local player** next to each
 controller on the RetroArch page. RetroConnect reserves that controller for
@@ -228,6 +249,9 @@ folders, so nothing else on your PC is reachable.
 | `src/main/server.js` | Sync server: manifest, current session, file downloads |
 | `src/main/sync.js` | Guest side: matching, resumable downloads |
 | `src/main/launcher.js` | Builds the RetroArch `--host` / `--connect` command |
+| `src/main/netplay-control.js` | Follows RetroArch's log for player numbers; swap players |
+| `src/main/systems.js` | System from folder names: core choice and box art |
+| `src/main/gameinfo.js` | Language, hacks/homebrew, player counts and genres for the filters |
 | `src/main/retroarch-installer.js` | Installs/updates RetroArch from libretro's stable builds |
 | `src/main/retroarch-setup.js` | Controller detection, netplay-friendly `retroarch.cfg`, core list |
 | `src/main/tailscale.js` | Installs Tailscale, signs in / joins with a key, lists devices |

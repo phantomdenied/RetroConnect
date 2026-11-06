@@ -66,14 +66,17 @@ function wireIpc() {
   handle('state', () => controller.state());
   handle('settings:save', (partial) => controller.saveSettings(partial));
   handle('settings:newSecret', () => config.generateSecret());
+  handle('net:publicIp', (opts) => controller.publicAddress(opts || {}));
   handle('library', (opts) => controller.getLibrary(opts || {}));
   handle('host', (sha, core) => controller.host(sha, core));
   handle('host:stop', () => controller.stopHosting());
+  handle('players:swap', () => controller.swapPlayers());
   handle('join', () => controller.join());
   handle('sync', (shas) => controller.syncGames(shas || null));
   handle('retroarch:latest', () => controller.checkRetroArchLatest());
   handle('retroarch:install', (version) => controller.installRetroArch(version || null));
   handle('conn:check', () => controller.checkConnection());
+  handle('conn:checkPorts', () => controller.checkMyPorts());
   handle('suggest', (sha) => controller.suggest(sha));
   handle('favorite', (sha) => controller.toggleFavorite(String(sha)));
   handle('suggest:clear', () => controller.clearSuggestion());
@@ -125,10 +128,12 @@ function wireController() {
     }
   });
   let thumbTimer = null;
-  controller.on('thumb', () => {
-    clearTimeout(thumbTimer); // covers arrive in bursts: refresh the list once
+  const refreshList = () => {
+    clearTimeout(thumbTimer); // covers and game info arrive in bursts: refresh the list once
     thumbTimer = setTimeout(() => send('thumbs'), 400);
-  });
+  };
+  controller.on('thumb', refreshList);
+  controller.on('gameinfo', refreshList); // player counts / genres for a system arrived
   controller.on('suggestion', (sug) => {
     send('suggestion', sug);
     if (Notification.isSupported() && !(win && win.isFocused())) {

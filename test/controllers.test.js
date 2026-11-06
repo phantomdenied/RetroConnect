@@ -164,8 +164,12 @@ test('controller: remembers controllers, picks driver, and Host/Join launch with
   await alex.host(lib.rows[0].mine.sha256);
   const hostLaunch = launches.find((l) => l.role === 'host').overrides;
   assert.equal(hostLaunch.input_joypad_driver, 'sdl2');
-  assert.equal(hostLaunch.netplay_request_device_p2, 'true');
+  // No fixed ports (they'd undo a swap): the host starts out watching, so Sam
+  // takes Player 1 on joining and Alex steps in as Player 2.
   assert.equal(hostLaunch.netplay_request_device_p1, 'false');
+  assert.equal(hostLaunch.netplay_request_device_p2, 'false');
+  assert.equal(hostLaunch.netplay_start_as_spectator, 'true');
+  assert.equal(hostLaunch.network_cmd_enable, 'true');
   assert.equal(hostLaunch.input_player1_reserved_device, '054c:0ce6 DualSense Wireless Controller');
   assert.equal(alex.server.session.host_player, 2);
 
@@ -173,7 +177,8 @@ test('controller: remembers controllers, picks driver, and Host/Join launch with
   await sam.join();
   const guestLaunch = launches.find((l) => l.role === 'guest').overrides;
   assert.equal(guestLaunch.input_joypad_driver, 'xinput');
-  assert.equal(guestLaunch.netplay_request_device_p1, 'true'); // Sam is Player 1
+  assert.equal(guestLaunch.netplay_request_device_p1, 'false'); // first free port: Player 1
   assert.equal(guestLaunch.netplay_request_device_p2, 'false');
+  assert.equal(guestLaunch.netplay_start_as_spectator, 'false');
   assert.equal(guestLaunch.input_player1_reserved_device, undefined); // Sam assigned nothing
 });
