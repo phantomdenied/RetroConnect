@@ -30,7 +30,7 @@ button, input, select { font: inherit; color: inherit; }
 
 .app {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 220px minmax(0, 1fr) auto;
   grid-template-rows: 1fr auto;
   height: 100vh;
 }
@@ -181,7 +181,7 @@ table.cores td:first-child { width: 70px; font-family: var(--mono); color: var(-
 .save-bar { position: sticky; bottom: -28px; background: var(--bg); padding: 14px 0; display: flex; gap: 10px; align-items: center; border-top: 1px solid var(--line); margin-top: 16px; }
 
 /* ----- activity ----- */
-.activity { grid-column: 2; min-width: 0; border-top: 1px solid var(--line); background: var(--bg-2); }
+.activity { grid-column: 2 / 4; min-width: 0; border-top: 1px solid var(--line); background: var(--bg-2); }
 .activity-bar { display: flex; align-items: center; gap: 14px; padding: 8px 18px; min-height: 40px; }
 .activity-status { color: var(--muted); font-size: 12.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-status.warn { color: var(--warn); }
@@ -276,3 +276,33 @@ table.cores td:first-child { width: 70px; font-family: var(--mono); color: var(-
 .star:hover { color: var(--warn); }
 .star.on { color: var(--warn); }
 .pick-card .cover { width: 56px; height: 72px; }
+
+/* ----- game panel (right side) ----- */
+.game.clickable { cursor: pointer; }
+.game.selected { border-color: var(--accent-2); }
+.drawer {
+  grid-column: 3; grid-row: 1; width: 380px; overflow-y: auto; background: var(--bg-2);
+  border-left: 1px solid var(--line); padding: 18px 18px 24px; display: flex; flex-direction: column; gap: 14px;
+}
+.drawer-head { display: flex; gap: 10px; align-items: flex-start; }
+.drawer-head .grow { flex: 1; min-width: 0; }
+.drawer-title { font-size: 17px; font-weight: 750; line-height: 1.25; }
+.drawer-cover { width: 100%; max-height: 260px; object-fit: contain; border-radius: 8px; background: var(--panel); }
+div.drawer-cover { height: 120px; display: flex; align-items: center; justify-content: center; font-size: 28px; }
+.drawer-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.drawer-section { border-top: 1px solid var(--line); padding-top: 12px; }
+.drawer-section input[type=search] { margin-bottom: 8px; }
+.drawer-desc { margin: 0 0 6px; font-size: 13px; line-height: 1.5; }
+.cheat-list { display: flex; flex-direction: column; gap: 4px; max-height: 420px; overflow-y: auto; margin-bottom: 12px; }
+.cheat { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border-radius: 8px; background: var(--panel); cursor: pointer; font-size: 13px; }
+.cheat.on { outline: 1px solid var(--accent); }
+.cheat input { margin-top: 3px; accent-color: var(--accent); flex: none; }
+.cheat .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.cheat-code { display: block; font-size: 11px; }
+.cheat .badge { flex: none; }
+
+/* ----- patcher ----- */
+.pick-rom { cursor: pointer; }
+.pick-rom.selected { border-color: var(--accent); }
+.patch-done { margin-top: 14px; padding: 12px 14px; border-radius: 8px; border: 1px solid rgba(87,227,155,.5); background: rgba(87,227,155,.08); }
+.patch-done .big { font-weight: 700; }

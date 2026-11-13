@@ -113,11 +113,15 @@ function retroarchVersion(cmd) {
   const key = cmd.join('\0');
   if (!versionCache.has(key)) {
     versionCache.set(key, new Promise((resolve) => {
-      execFile(cmd[0], [...cmd.slice(1), '--version'], { timeout: 15000, windowsHide: true },
-        (err, stdout, stderr) => {
-          const m = /v?(\d+\.\d+\.\d+)/.exec(`${stdout || ''}${stderr || ''}`);
-          resolve(m ? m[1] : null);
-        });
+      try {
+        execFile(cmd[0], [...cmd.slice(1), '--version'], { timeout: 15000, windowsHide: true },
+          (err, stdout, stderr) => {
+            const m = /v?(\d+\.\d+\.\d+)/.exec(`${stdout || ''}${stderr || ''}`);
+            resolve(m ? m[1] : null);
+          });
+      } catch {
+        resolve(null); // not a runnable program (e.g. a broken or empty .exe)
+      }
     }));
   }
   return versionCache.get(key);
@@ -289,4 +293,4 @@ function clearVersionCache() {
   versionCache.clear();
 }
 
-module.exports = { Library, groupDiscs, discRefs, HashCache, hashFile, isContentFile, safeRelParts, retroarchVersion, clearVersionCache, MANIFEST_VERSION };
+module.exports = { Library, crc32Update, groupDiscs, discRefs, HashCache, hashFile, isContentFile, safeRelParts, retroarchVersion, clearVersionCache, MANIFEST_VERSION };

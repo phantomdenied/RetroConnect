@@ -64,8 +64,26 @@ mismatched files. Then RetroArch launches and connects for both of you.
   original art drawn in code (no image files). Retro effects off stops the motion.
 - **Send files** (Files page): share anything that isn't a game (save files, manuals,
   texture packs, mods, whole folders). Your buddy sees it within seconds and chooses
-  Download or Dismiss; it lands in DownloadsRetroConnect (changeable in Settings).
+  Download or Dismiss; it lands in a RetroConnect folder inside Downloads (changeable in Settings).
   Only the files you add are reachable, by hash; downloads resume and are checked.
+- **Game panel**: click a game for its cover, a short description (from Wikipedia)
+  and its cheats, from RetroArch's cheat folder (one click downloads libretro's
+  cheat database if it isn't there yet). Tick the cheats you want:
+  - **Online** cheats (Game Genie and ROM-address codes on NES, SNES, Genesis,
+    Game Boy and Game Boy Color) are built into a copy of the game,
+    "Game [Cheats]", next to the original. **Host with cheats** hosts that copy, and
+    your buddy's app downloads it when they join, so you both play with them.
+    (RetroArch itself turns cheats off during netplay.) Each code is checked against
+    your exact ROM first; codes for another version of the game are left out.
+  - **Solo** cheats change memory while the game runs; **Play solo with cheats**
+    writes RetroArch's per-game cheat file and starts the game on its own.
+- **Patcher** page: apply IPS, BPS and UPS patches (translations, hacks, fixes),
+  loose or inside a .zip. It checks the ROM first: BPS/UPS carry the exact ROM's
+  checksum, and for IPS it reads the CRC32 / MD5 / SHA-1 from the patch's readme or
+  one you paste in, and finds the matching ROM in your library (inside zips too).
+  A wrong ROM is refused; an IPS with no checksum anywhere asks before patching.
+  SNES copier headers are removed when that's what makes it match. The result is
+  saved as "Game [Patch name]" next to the original, which is never changed.
 
 ## Install (Windows)
 

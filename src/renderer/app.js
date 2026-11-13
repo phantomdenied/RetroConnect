@@ -162,15 +162,18 @@ function render() {
   $('#nav-friend').textContent = S.buddy && S.buddy.nickname ? `${S.buddy.nickname}'s games` : "Friend's games";
   const newFiles = newIncomingCount();
   $('#nav-files').textContent = newFiles ? `Files (${newFiles})` : 'Files';
-  for (const v of ['games', 'friend', 'files', 'buddy', 'retroarch', 'settings']) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ['games', 'friend', 'files', 'patcher', 'buddy', 'retroarch', 'settings']) $(`#view-${v}`).hidden = v !== view;
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   if (view === 'games') renderGames();
   if (view === 'friend') renderFriend();
   if (view === 'files') renderFiles();
+  if (view === 'patcher') renderPatcher();
   if (view === 'buddy') renderConnect();
   if (view === 'settings') renderSettings();
   if (view === 'retroarch') renderRetroArch();
   if (view === 'friend') renderFriend();
+  if (view !== 'games' && drawer) drawer = null;
+  renderDrawer();
   renderWizard();
 }
 
@@ -237,9 +240,9 @@ function renderBanner() {
     node = h('div', { class: 'banner hosting' },
       h('span', { class: 'pulse' }),
       h('div', { class: 'grow' },
-        h('div', { class: 'big' }, `Playing ${gameTitle(S.playing.rom.path)} with ${S.playing.host}`, liveplayerTag(null)),
-        h('div', { class: 'muted small' }, 'Close RetroArch to end the session.')),
-      swapButton());
+        h('div', { class: 'big' }, S.playing.solo ? `Playing ${gameTitle(S.playing.rom.path)} on your own` : `Playing ${gameTitle(S.playing.rom.path)} with ${S.playing.host}`, S.playing.solo ? null : liveplayerTag(null)),
+        h('div', { class: 'muted small' }, S.playing.solo ? "Close RetroArch when you're done." : 'Close RetroArch to end the session.')),
+      S.playing.solo ? null : swapButton());
   } else if (b.status === 'online' && b.session) {
     const s = b.session;
     node = h('div', { class: 'banner' },
@@ -647,7 +650,11 @@ function gameRow(r) {
     r.kind === 'hack' ? 'hack' : r.kind === 'homebrew' ? 'homebrew' : null,
   ].filter(Boolean).join(' · ');
   const entry = r.mine || r.theirs;
-  return h('div', { class: 'game' },
+  return h('div', {
+    class: `game clickable ${drawer && drawer.path === r.path ? 'selected' : ''}`,
+    title: 'Details and cheats',
+    onclick: (e) => { if (!e.target.closest('button, select, input, a')) openDrawer(r); },
+  },
     cover(r),
     h('div', { style: 'min-width:0' },
       h('div', { class: 'title', title: r.path }, starButton(r), gameTitle(r.path)),
@@ -1543,12 +1550,320 @@ function renderWizard() {
         : h('button', { class: 'btn primary', disabled: wiz.step === 0 && !(d.nickname.trim() && d.romsDir.trim()), onclick: next }, 'Next'))));
 }
 
+// ----- game panel (right side): description + cheats ---------------------------
+
+let drawer = null; // { path, sha, desc, cheats, q }
+
+function openDrawer(r) {
+  const sha = r.mine ? r.mine.sha256 : null;
+  if (drawer && drawer.path === r.path) { closeDrawer(); return; }
+  drawer = { path: r.path, sha, desc: undefined, cheats: undefined, q: '' };
+  renderDrawer();
+  renderGameList();
+  const mine = drawer;
+  rc.describeGame(r.path)
+    .then((d) => { if (drawer === mine) { drawer.desc = d; renderDrawer(); } })
+    .catch(() => { if (drawer === mine) { drawer.desc = null; renderDrawer(); } });
+  loadDrawerCheats();
+}
+
+function loadDrawerCheats() {
+  const mine = drawer;
+  if (!mine || !mine.sha) return;
+  rc.cheats(mine.sha)
+    .then((c) => { if (drawer === mine) { drawer.cheats = c; renderDrawer(); } })
+    .catch((err) => { if (drawer === mine) { drawer.cheats = { error: err.message }; renderDrawer(); } });
+}
+
+function closeDrawer() {
+  drawer = null;
+  renderDrawer();
+  renderGameList();
+}
+
+function drawerRow() {
+  if (!drawer || !lib) return null;
+  return lib.rows.find((r) => r.path === drawer.path) || null;
+}
+
+function cheatSection(r) {
+  if (!r.mine) return h('p', { class: 'muted small' }, `Get the game first (from ${buddyName()}) to use cheats.`);
+  const c = drawer.cheats;
+  if (c === undefined) return h('p', { class: 'muted small' }, 'Looking for cheats…');
+  if (c.error) return h('p', { class: 'bad-text small' }, c.error);
+  const busy = Boolean(S.busy) || Boolean(S.hosting || S.playing);
+  if (!c.file) {
+    return h('div', {},
+      c.hasDatabase
+        ? h('p', { class: 'muted small' }, "RetroArch's cheat database has nothing for this game.")
+        : h('p', { class: 'muted small' }, "RetroArch's cheat database isn't on this PC yet. It's a free download (about 40 MB) with cheats for thousands of games."),
+      h('div', { class: 'row', style: 'flex-wrap:wrap' },
+        c.hasDatabase ? null : h('button', {
+          class: 'btn primary small', disabled: Boolean(S.busy),
+          onclick: () => act(async () => { await rc.downloadCheats(); loadDrawerCheats(); }, { success: 'Cheats downloaded' }),
+        }, S.busy === 'Downloading cheats' ? 'Downloading…' : 'Download cheats'),
+        h('button', { class: 'btn small', onclick: () => act(() => rc.openCheatFolder(r.mine.sha256)) }, 'Open cheat folder')));
+  }
+  const on = c.cheats.filter((x) => x.on);
+  const onlineOn = on.filter((x) => x.multiplayer);
+  const q = drawer.q.trim().toLowerCase();
+  const shown = c.cheats.filter((x) => !q || x.desc.toLowerCase().includes(q) || x.code.toLowerCase().includes(q));
+  const save = () => rc.setCheats(r.mine.sha256, c.cheats.filter((x) => x.on).map((x) => x.index)).catch((err) => toast(err.message, 'error'));
+  const onlineCount = c.cheats.filter((x) => x.multiplayer).length;
+  return h('div', {},
+    h('p', { class: 'muted small', style: 'margin-top:0' },
+      c.canBakeSystem
+        ? `${onlineCount} of ${c.cheats.length} work online: they're built into a copy of the game, so you and ${buddyName()} both get them. "Solo" cheats change memory while the game runs, which RetroArch only allows when you play alone.`
+        : 'On this system cheats only work when you play alone (RetroArch turns them off online).'),
+    c.headerless ? h('p', { class: 'warn-text small' }, "⚠ This NES file has no header, so cheats can't be built into it. A headered copy of the game (the usual .nes from No-Intro) would let them work online.") : null,
+    c.cheats.length > 12 ? h('input', {
+      type: 'search', placeholder: 'Search cheats', value: drawer.q,
+      oninput: (e) => { drawer.q = e.target.value; renderCheatList(); },
+    }) : null,
+    h('div', { id: 'cheat-list', class: 'cheat-list' }, shown.map((x) => h('label', { class: `cheat ${x.on ? 'on' : ''}` },
+      h('input', {
+        type: 'checkbox', checked: x.on,
+        onchange: (e) => { x.on = e.target.checked; save(); renderDrawer(); },
+      }),
+      h('span', { class: 'grow' }, x.desc, h('span', { class: 'mono muted cheat-code' }, x.code)),
+      h('span', { class: `badge ${x.multiplayer ? 'both' : 'mine'}`, title: x.multiplayer ? 'Works when you play together' : `Only when playing alone: ${x.why || 'needs the emulator'}` }, x.multiplayer ? 'Online' : 'Solo')))),
+    h('div', { class: 'drawer-actions' },
+      h('button', {
+        class: 'btn primary', disabled: busy || !onlineOn.length || !r.coreInstalled,
+        title: onlineOn.length ? `Host a copy of the game with ${onlineOn.length} cheat(s) built in. ${buddyName()} downloads it when they join.` : 'Switch on an "Online" cheat first',
+        onclick: () => act(async () => {
+          const made = await rc.hostWithCheats(r.mine.sha256);
+          await loadLibrary();
+          return made;
+        }, { success: (m) => `Hosting with ${m.applied.length} cheat(s)${m.soloOnly.length ? ` (${m.soloOnly.length} solo-only left out)` : ''}${m.skipped.length ? `; ${m.skipped.length} didn't fit this version` : ''}` }),
+      }, onlineOn.length ? `Host with ${onlineOn.length} cheat${onlineOn.length === 1 ? '' : 's'}` : 'Host with cheats'),
+      h('button', {
+        class: 'btn', disabled: busy || !on.length || !r.coreInstalled,
+        onclick: () => act(() => rc.playSolo(r.mine.sha256), { success: `Playing on your own with ${on.length} cheat(s)` }),
+      }, 'Play solo with cheats'),
+      h('button', {
+        class: 'btn small', disabled: busy || !onlineOn.length,
+        title: 'Save "Game [Cheats]" next to the game without starting it',
+        onclick: () => act(async () => { const m = await rc.makeCheatRom(r.mine.sha256); await loadLibrary(); return m; },
+          { success: (m) => `Saved ${m.path.split('/').pop()}` }),
+      }, 'Save cheat copy'),
+      h('button', { class: 'link-btn small', onclick: () => act(() => rc.openCheatFolder(r.mine.sha256)) }, 'Show cheat file')));
+}
+
+function renderCheatList() {
+  // Re-render only the list while typing in the search box (keeps focus).
+  const list = $('#cheat-list');
+  if (!list || !drawer || !drawer.cheats || !drawer.cheats.cheats) return;
+  const box = document.activeElement;
+  renderDrawer();
+  if (box && box.type === 'search') { const s = $('#drawer input[type=search]'); if (s) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); } }
+}
+
+function renderDrawer() {
+  const el = $('#drawer');
+  const r = drawerRow();
+  if (!drawer || !r) {
+    el.hidden = true;
+    document.body.classList.remove('drawer-open');
+    if (drawer && lib) drawer = null;
+    return;
+  }
+  el.hidden = false;
+  document.body.classList.add('drawer-open');
+  const d = drawer.desc;
+  const canHost = r.mine && !S.hosting && !S.playing && r.coreInstalled;
+  const facts = [r.system, regionTag(r.path), r.players ? (r.players === 1 ? '1 player' : `${r.players} players`) : null, r.genre].filter(Boolean);
+  const big = r.thumb
+    ? h('img', { class: 'drawer-cover', src: `rcthumb://cover/${r.sha}`, alt: '' })
+    : h('div', { class: 'drawer-cover sys' }, r.systemShort || systemOf(r.path));
+  mount(el,
+    h('div', { class: 'drawer-head' },
+      h('div', { class: 'grow' },
+        h('div', { class: 'drawer-title' }, gameTitle(r.path)),
+        h('div', { class: 'muted small' }, facts.join(' · '))),
+      h('button', { class: 'btn small', title: 'Close', onclick: closeDrawer }, '✕')),
+    big,
+    h('div', { class: 'drawer-actions' },
+      r.mine ? h('button', {
+        class: 'btn primary', disabled: !canHost,
+        onclick: () => act(() => rc.host(r.mine.sha256), { success: `Hosting ${gameTitle(r.path)}` }),
+      }, 'Host') : null,
+      r.mine ? h('button', {
+        class: 'btn', disabled: !canHost || Boolean(S.busy),
+        title: 'Play on your own (no netplay)',
+        onclick: () => act(() => rc.playSolo(r.mine.sha256), { success: `Playing ${gameTitle(r.path)}` }),
+      }, 'Play solo') : null,
+      !r.mine && r.theirs ? h('button', {
+        class: 'btn cyan', disabled: Boolean(S.busy),
+        onclick: () => act(async () => { await rc.sync([r.theirs.sha256]); await loadLibrary(); }, { success: `Got ${gameTitle(r.path)}` }),
+      }, 'Get it') : null),
+    h('div', { class: 'drawer-section' },
+      h('h2', {}, 'About'),
+      d === undefined ? h('p', { class: 'muted small' }, 'Looking it up…')
+        : d ? h('div', {},
+          h('p', { class: 'drawer-desc' }, d.text),
+          h('button', { class: 'link-btn small', onclick: () => act(() => rc.openUrl(d.url)) }, `From Wikipedia: ${d.title}`))
+          : h('p', { class: 'muted small' }, 'No description found for this one.'),
+      h('p', { class: 'muted small mono', style: 'margin-bottom:0' }, r.path)),
+    h('div', { class: 'drawer-section' },
+      h('h2', {}, 'Cheats'),
+      cheatSection(r)));
+}
+
+// ----- Patcher page -------------------------------------------------------------
+
+const pat = { file: null, info: null, patchName: null, romSha: null, hash: '', q: '', result: null, confirm: null, loading: false };
+
+async function patchInspect() {
+  pat.loading = true;
+  pat.result = null;
+  pat.confirm = null;
+  renderPatcher();
+  try {
+    pat.info = await rc.patchInspect(pat.file, pat.hash.trim());
+    const first = pat.info.matches[0];
+    if (!pat.info.patches.some((p) => p.name === pat.patchName)) pat.patchName = (first && first.patch) || pat.info.patches[0].name;
+    if (pat.info.matches.length === 1) pat.romSha = first.sha;
+    else if (!pat.info.matches.some((m) => m.sha === pat.romSha) && pat.info.matches.length) pat.romSha = null;
+  } catch (err) {
+    pat.info = null;
+    toast(err.message, 'error');
+  } finally {
+    pat.loading = false;
+    renderPatcher();
+  }
+}
+
+async function patchApply(force = false) {
+  const r = await act(() => rc.patchApply({ patchPath: pat.file, patchName: pat.patchName, romSha: pat.romSha, userHash: pat.hash.trim(), force }));
+  if (!r) return;
+  if (r.needsConfirm) { pat.confirm = r.problem; pat.result = null; }
+  else { pat.result = r; pat.confirm = null; await loadLibrary().catch(() => {}); }
+  renderPatcher();
+}
+
+function renderPatcher() {
+  const root = $('#view-patcher');
+  const busy = Boolean(S.busy);
+  const info = pat.info;
+  const patch = info && info.patches.find((p) => p.name === pat.patchName);
+  const mineRows = lib ? lib.rows.filter((r) => r.mine) : [];
+  const matchSet = new Set(info ? info.matches.map((m) => m.sha) : []);
+
+  const hashLine = () => {
+    if (!patch) return null;
+    if (patch.format !== 'ips') {
+      return h('p', { class: 'small' }, '✓ This ', patch.format.toUpperCase(), ' patch names the exact ROM it needs (CRC32 ', h('span', { class: 'mono' }, patch.source), '). The wrong ROM is refused.');
+    }
+    const w = info.wanted;
+    const list = [...w.crc32.map((x) => `CRC32 ${x}`), ...w.md5.map((x) => `MD5 ${x}`), ...w.sha1.map((x) => `SHA-1 ${x}`)];
+    if (list.length) {
+      return h('p', { class: 'small' }, `✓ ${w.typed ? 'You gave' : 'Its readme names'} the right ROM: `, h('span', { class: 'mono' }, list.slice(0, 3).join(', ')), '. The wrong ROM is refused.');
+    }
+    return h('p', { class: 'small warn-text' }, "⚠ IPS patches don't say which ROM they're for, and this one came without a readme naming it. If the patch's web page lists a checksum (CRC32, MD5 or SHA-1), paste it below so the ROM gets checked.");
+  };
+
+  const fileCard = h('div', { class: 'card' },
+    h('h2', {}, '1. The patch'),
+    h('div', { class: 'row', style: 'flex-wrap:wrap;margin-bottom:10px' },
+      h('button', {
+        class: 'btn primary', disabled: busy || pat.loading,
+        onclick: async () => {
+          const f = await act(() => rc.pickPatch());
+          if (!f) return;
+          Object.assign(pat, { file: f, info: null, patchName: null, romSha: null, hash: '', result: null, confirm: null });
+          await patchInspect();
+        },
+      }, pat.file ? 'Choose another patch' : 'Choose a patch'),
+      pat.file ? h('span', { class: 'mono small' }, pat.file.split(/[\\/]/).pop()) : h('span', { class: 'muted small' }, '.ips, .bps, .ups, or a .zip with one inside')),
+    pat.loading ? h('p', { class: 'muted small' }, 'Reading the patch and checking your ROMs…') : null,
+    info && info.patches.length > 1 ? h('div', { class: 'field' },
+      h('label', {}, 'This file has several patches. Use:'),
+      h('select', { onchange: (e) => { pat.patchName = e.target.value; pat.result = null; renderPatcher(); } },
+        info.patches.map((p) => h('option', { value: p.name, selected: p.name === pat.patchName }, `${p.name} (${p.format.toUpperCase()})`)))) : null,
+    info && patch && info.patches.length === 1 ? h('p', { class: 'muted small', style: 'margin:0' }, `${patch.format.toUpperCase()} patch · ${fmtBytes(patch.size)}`) : null,
+    hashLine(),
+    patch && patch.format === 'ips' ? h('div', { class: 'field', style: 'margin-bottom:0' },
+      h('label', {}, 'Checksum of the right ROM (optional)'),
+      h('div', { class: 'row' },
+        h('input', { type: 'text', placeholder: 'CRC32, MD5 or SHA-1', value: pat.hash, oninput: (e) => { pat.hash = e.target.value; } }),
+        h('button', { class: 'btn', disabled: pat.loading, onclick: patchInspect }, 'Check'))) : null);
+
+  const romItem = (r) => h('div', {
+    class: `game pick-rom ${pat.romSha === r.mine.sha256 ? 'selected' : ''}`,
+    onclick: () => { pat.romSha = r.mine.sha256; pat.result = null; pat.confirm = null; renderPatcher(); },
+  },
+  cover(r),
+  h('div', { style: 'min-width:0' },
+    h('div', { class: 'title' }, gameTitle(r.path)),
+    h('div', { class: 'meta' }, r.path)),
+  matchSet.has(r.mine.sha256) ? h('span', { class: 'badge both' }, '✓ Right ROM') : h('span', {}),
+  h('span', { class: 'muted' }, pat.romSha === r.mine.sha256 ? '●' : '○'));
+
+  let romCard = null;
+  if (info) {
+    const matched = mineRows.filter((r) => matchSet.has(r.mine.sha256));
+    const q = pat.q.trim().toLowerCase();
+    const others = q ? mineRows.filter((r) => !matchSet.has(r.mine.sha256) && r.path.toLowerCase().includes(q)).slice(0, 40) : [];
+    romCard = h('div', { class: 'card' },
+      h('h2', {}, '2. Your ROM'),
+      matched.length
+        ? h('p', { class: 'muted small', style: 'margin-top:0' }, matched.length === 1 ? 'Found the ROM this patch was made for:' : 'These ROMs match the patch:')
+        : h('p', { class: 'muted small', style: 'margin-top:0' }, patch && (patch.format !== 'ips' || info.wanted.crc32.length)
+          ? "None of your ROMs is the exact one this patch needs. Search for the game below; if it's a different version (region or revision) it will be refused, and you'll need the right dump."
+          : 'Search for the game to patch:'),
+      matched.length ? h('div', { class: 'games' }, matched.map(romItem)) : null,
+      h('input', {
+        type: 'search', placeholder: 'Search your games', value: pat.q, style: 'margin-top:10px',
+        oninput: (e) => { pat.q = e.target.value; renderPatcherList(); },
+      }),
+      h('div', { id: 'patch-rom-list', class: 'games', style: 'margin-top:8px' }, others.map(romItem)));
+  }
+
+  const sel = pat.romSha && mineRows.find((r) => r.mine.sha256 === pat.romSha);
+  const goCard = info && patch ? h('div', { class: 'card' },
+    h('h2', {}, '3. Patch it'),
+    h('p', { class: 'muted small', style: 'margin-top:0' }, 'The patched game is saved as a new file next to the original, which stays as it is.'),
+    pat.confirm ? h('div', { class: 'banner suggest', style: 'margin-bottom:12px' },
+      h('div', { class: 'grow' },
+        h('div', { class: 'big' }, "Can't check this ROM"),
+        h('div', { class: 'small' }, pat.confirm, ' Patching the wrong ROM gives a broken game (the original is never touched).')),
+      h('button', { class: 'btn', disabled: busy, onclick: () => patchApply(true) }, 'Patch anyway'),
+      h('button', { class: 'btn small', onclick: () => { pat.confirm = null; renderPatcher(); } }, 'Cancel')) : null,
+    h('button', {
+      class: 'btn primary', disabled: busy || !sel,
+      onclick: () => patchApply(false),
+    }, sel ? `Patch ${gameTitle(sel.path)}` : 'Pick a ROM first'),
+    pat.result ? h('div', { class: 'patch-done' },
+      h('div', { class: 'big' }, `✓ Saved ${pat.result.path.split('/').pop()}`),
+      h('div', { class: 'small muted' },
+        pat.result.verified ? `Checked: ${pat.result.verified}.` : 'Not checked (you chose to patch anyway).',
+        pat.result.droppedHeader ? ' The ROM had a 512-byte copier header, which was removed first.' : '',
+        ` It's in your library now, so you can host it; ${buddyName()} downloads it when they join.`),
+      h('div', { class: 'row', style: 'margin-top:8px' },
+        h('button', { class: 'btn small', onclick: () => act(() => rc.showPatched(pat.result.full)) }, 'Show in folder'),
+        h('button', { class: 'btn small', onclick: () => { view = 'games'; query = gameTitle(pat.result.path); render(); } }, 'Find it in Games'))) : null) : null;
+
+  mount(root,
+    h('div', { class: 'view-head' }, h('h1', {}, 'Patcher')),
+    h('p', { class: 'muted', style: 'margin-top:-6px' }, 'Apply translations, hacks and fixes (IPS, BPS, UPS) to your games. Each patch is checked against your ROM first so you don\'t end up with a broken game.'),
+    fileCard, romCard, goCard);
+}
+
+function renderPatcherList() {
+  const box = document.activeElement;
+  renderPatcher();
+  if (box && box.type === 'search') { const s = $('#view-patcher input[type=search]'); if (s) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); } }
+}
+
 // ----- data loading ----------------------------------------------------------
 
 async function loadLibrary(refreshBuddy = false) {
   lib = await rc.library({ refreshBuddy });
   if (S) renderBanner(); // e.g. a suggestion banner changes from "Get it" to "Host it"
   if (view === 'games') renderGames();
+  if (view === 'patcher') renderPatcher();
+  renderDrawer();
 }
 
 let lastBuddyKey = '';

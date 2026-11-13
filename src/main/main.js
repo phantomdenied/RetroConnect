@@ -132,6 +132,36 @@ function wireIpc() {
     });
     return r.canceled ? [] : r.filePaths;
   });
+  handle('game:describe', (romPath) => controller.gameDescription(String(romPath || '')));
+  handle('cheats:get', (sha) => controller.gameCheats(String(sha)));
+  handle('cheats:set', (sha, indices) => controller.setCheats(String(sha), indices));
+  handle('cheats:download', () => controller.downloadCheats());
+  handle('cheats:make', (sha) => controller.makeCheatRom(String(sha)));
+  handle('cheats:host', (sha) => controller.hostWithCheats(String(sha)));
+  handle('cheats:solo', (sha) => controller.playSolo(String(sha)));
+  handle('cheats:openFolder', async (sha) => {
+    const info = await controller.gameCheats(String(sha));
+    if (info.file) shell.showItemInFolder(info.file);
+    else {
+      fs.mkdirSync(info.cheatDir, { recursive: true });
+      await shell.openPath(info.cheatDir);
+    }
+    return true;
+  });
+  handle('patch:inspect', (file, userHash) => controller.patchInspect(String(file || ''), String(userHash || '')));
+  handle('patch:apply', (opts) => controller.patchApply(opts || {}));
+  handle('patch:show', (full) => {
+    if (full && fs.existsSync(String(full))) shell.showItemInFolder(String(full));
+    return true;
+  });
+  handle('dialog:patch', async () => {
+    const r = await dialog.showOpenDialog(win, {
+      title: 'Pick a patch (.ips, .bps, .ups or a .zip with one)',
+      filters: [{ name: 'ROM patches', extensions: ['ips', 'bps', 'ups', 'zip'] }, { name: 'All files', extensions: ['*'] }],
+      properties: ['openFile'],
+    });
+    return r.canceled ? null : r.filePaths[0];
+  });
   handle('ra-setup:cores', (names) => controller.installCores(Array.isArray(names) ? names : []));
   handle('ra-setup:all', (opts) => controller.setUpEverything(opts || {}));
   handle('ra-setup:open', () => controller.openRetroArch());

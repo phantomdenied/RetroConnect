@@ -20,6 +20,10 @@ const invite = require('./invite');
 const raSetup = require('./retroarch-setup');
 const { fetchCoreFromBuildbot, HttpError, downloadFromHost } = require('./sync');
 const transfer = require('./transfer');
+const patcher = require('./patcher');
+const cheats = require('./cheats');
+const cheatcodes = require('./cheatcodes');
+const describe = require('./describe');
 const netcheck = require('./netcheck');
 const savesLib = require('./saves');
 const { ThumbCache } = require('./thumbnails');
@@ -136,6 +140,8 @@ class Controller extends EventEmitter {
     this.receivedFile = path.join(dataDir, 'received.json');
     this.received = { saved: {}, dismissed: [], ...transfer.readJson(this.receivedFile, {}) };
     this.incoming = []; // buddy's outbox, cleaned
+    this.descriptions = new describe.DescriptionCache(path.join(dataDir, 'descriptions.json'));
+    this.cheatState = null; // { romSha: [cheat indices switched on] }
   }
 
   // ----- lifecycle -----------------------------------------------------------
@@ -1336,6 +1342,237 @@ class Controller extends EventEmitter {
       .then(() => { this.log(`Your buddy connected from ${addr}. Saved as their address.`); return this.pollBuddy(); })
       .catch(() => {})
       .finally(() => { this.notingBuddy = false; });
+  }
+
+  // ----- ROM patches (IPS / BPS / UPS) -------------------------------------------
+
+  /** CRC32s of a library ROM's game data: the file's own, or each file in its zip. */
+  async romCrcs(rom) {
+    if (!/\.zip$/i.test(rom.path)) return rom.crc32 ? [rom.crc32] : [];
+    this.zipCrcCache = this.zipCrcCache || new Map();
+    if (!this.zipCrcCache.has(rom.sha256)) {
+      let list = [];
+      try { list = (await patcher.zipCrcs(this.library.romPath(rom))).map((e) => e.crc32); } catch { /* not a readable zip */ }
+      this.zipCrcCache.set(rom.sha256, list);
+    }
+    return this.zipCrcCache.get(rom.sha256);
+  }
+
+  /**
+   * What a patch file holds and which of your ROMs it was made for.
+   * matches: ROMs whose CRC32 is the one the patch (or its readme, or `userHash`) names.
+   */
+  async patchInspect(patchPath, userHash = '') {
+    const input = await patcher.readPatchInput(String(patchPath));
+    const typed = userHash ? patcher.hashesFromUser(userHash) : null;
+    if (userHash && !typed) throw new Error('That checksum should be 8 (CRC32), 32 (MD5) or 40 (SHA-1) hex characters');
+    const wantCrc = new Set([
+      ...input.patches.map((p) => p.source).filter(Boolean),
+      ...(typed || input.readmeHashes).crc32,
+    ]);
+    const roms = await this.library.scanRoms();
+    const matches = [];
+    if (wantCrc.size) {
+      for (const rom of roms) {
+        const crcs = await this.romCrcs(rom);
+        const hit = input.patches.find((p) => p.source && crcs.includes(p.source));
+        if (hit || crcs.some((c) => wantCrc.has(c))) matches.push({ sha: rom.sha256, path: rom.path, patch: hit ? hit.name : null });
+      }
+    }
+    const want = typed || input.readmeHashes;
+    return {
+      file: String(patchPath),
+      patches: input.patches.map(({ name, format, size, source, target }) => ({ name, format, size, source: source || null, target: target || null })),
+      readmeNames: input.readmeNames,
+      wanted: { crc32: want.crc32, md5: want.md5, sha1: want.sha1, typed: Boolean(typed) },
+      matches,
+    };
+  }
+
+  /**
+   * Patch a ROM into a new file next to it ("Game [Patch].ext"); the original is kept.
+   * Refuses a ROM that doesn't match the patch. An IPS with no known checksum
+   * returns { needsConfirm } unless `force` is set.
+   */
+  async patchApply({ patchPath, patchName, romSha, userHash = '', force = false }) {
+    return this.withBusy('Patching', async () => {
+      const input = await patcher.readPatchInput(String(patchPath));
+      const patch = input.patches.find((p) => p.name === patchName) || (input.patches.length === 1 ? input.patches[0] : null);
+      if (!patch) throw new Error('Pick which patch in the file to use');
+      const rom = await this.library.findRomBySha(String(romSha));
+      if (!rom) throw new Error('That game is no longer in your ROM folder');
+      const romFile = this.library.romPath(rom);
+      const typed = userHash ? patcher.hashesFromUser(userHash) : null;
+      if (userHash && !typed) throw new Error('That checksum should be 8 (CRC32), 32 (MD5) or 40 (SHA-1) hex characters');
+      let rd;
+      try { rd = await patcher.readRomData(romFile); } catch (err) { throw new Error(err.message); }
+      const check = patcher.verify(patch, rd.data, rd.inner, typed || input.readmeHashes);
+      if (!check.ok && !(check.needsConfirm && force)) {
+        if (check.needsConfirm) return { needsConfirm: true, problem: check.problem };
+        throw new Error(check.problem);
+      }
+      let out;
+      try { out = patcher.applyPatch(check.data, patch.data); } catch (err) { throw new Error(err.message); }
+      const dir = path.dirname(romFile);
+      let name = patcher.outputName(rom.path, rd.inner, patch.name);
+      for (let n = 2; fs.existsSync(path.join(dir, name)); n++) name = name.replace(/( \(\d+\))?(\.[^.]+)$/, ` (${n})$2`);
+      const dest = path.join(dir, name);
+      await fs.promises.writeFile(`${dest}.part`, out);
+      await fs.promises.rename(`${dest}.part`, dest);
+      const rel = path.posix.join(path.posix.dirname(rom.path), name).replace(/^\.\//, '');
+      this.log(`Patched ${rom.path} with ${patch.name} → ${rel}`);
+      return {
+        path: rel,
+        full: dest,
+        verified: check.ok ? check.how : null,
+        droppedHeader: Boolean(check.droppedHeader),
+        size: out.length,
+      };
+    });
+  }
+
+  // ----- game details: description + cheats ------------------------------------------
+
+  async localRom(sha) {
+    const rom = await this.library.findRomBySha(String(sha));
+    if (!rom) throw new Error("That game isn't in your ROM folder");
+    return rom;
+  }
+
+  /** A short description of a game from Wikipedia (cached), or null. */
+  async gameDescription(romPath) {
+    return describe.describe(this.descriptions, String(romPath), { fetchImpl: this.fetchImpl });
+  }
+
+  loadCheatState() {
+    if (!this.cheatState) this.cheatState = transfer.readJson(path.join(this.dataDir, 'cheats.json'), {});
+    return this.cheatState;
+  }
+
+  /** Cheats for one of your games, from RetroArch's cheat folder. */
+  async gameCheats(sha) {
+    const rom = await this.localRom(sha);
+    const { cheatDir } = await cheats.cheatPaths(config.retroarchCmd(this.cfg));
+    const system = systems.thumbSystemForRom(rom.path);
+    const file = await cheats.findDbCheat(cheatDir, rom.path);
+    const on = new Set(this.loadCheatState()[rom.sha256] || []);
+    let list = [];
+    if (file) {
+      try { list = cheats.parseCht(await fs.promises.readFile(file, 'latin1')); } catch { list = []; }
+    }
+    // Which cheats can be built into this exact ROM (checked against the file, not just the code).
+    let romData = null;
+    let romProblem = null;
+    if (list.length && cheatcodes.BAKEABLE.has(system)) {
+      try { romData = (await patcher.readRomData(this.library.romPath(rom))).data; } catch (err) { romProblem = err.message; }
+    }
+    const why = (code) => (romData ? cheatcodes.whyNot(system, romData, code) : (romProblem || 'needs the emulator'));
+    return {
+      sha: rom.sha256,
+      cheatDir,
+      hasDatabase: cheats.hasDatabase(cheatDir),
+      file,
+      fileName: file ? path.basename(file) : null,
+      canBakeSystem: cheatcodes.BAKEABLE.has(system),
+      cheats: list.map((c) => {
+        const w = why(c.code);
+        return { index: c.index, desc: c.desc, code: c.code, on: on.has(c.index), multiplayer: !w, why: w };
+      }),
+      headerless: Boolean(romData && system === cheatcodes.SYSTEMS.NES && romData.toString('latin1', 0, 4) !== 'NES\x1a'),
+    };
+  }
+
+  /** Remember which cheats are switched on for a game. */
+  setCheats(sha, indices) {
+    const state = this.loadCheatState();
+    const list = [...new Set((Array.isArray(indices) ? indices : []).map(Number).filter((n) => Number.isInteger(n) && n >= 0))];
+    if (list.length) state[String(sha)] = list; else delete state[String(sha)];
+    transfer.writeJson(path.join(this.dataDir, 'cheats.json'), state);
+    return list;
+  }
+
+  async downloadCheats() {
+    const { cheatDir } = await cheats.cheatPaths(config.retroarchCmd(this.cfg));
+    return this.withBusy('Downloading cheats', async () => {
+      const n = await cheats.downloadDatabase(cheatDir, { fetchImpl: this.fetchImpl, onProgress: (p) => this.progress(p) });
+      this.log(`Cheat database ready: ${n} games, in ${cheatDir}`);
+      return { files: n, cheatDir };
+    });
+  }
+
+  /**
+   * Bake the switched-on multiplayer cheats into "Game [Cheats].ext" next to the
+   * game. Both players run that copy, so the cheats work online.
+   */
+  async makeCheatRom(sha) {
+    const info = await this.gameCheats(sha);
+    const chosen = info.cheats.filter((c) => c.on);
+    if (!chosen.length) throw new Error('Switch on at least one cheat first');
+    const usable = chosen.filter((c) => c.multiplayer);
+    if (!usable.length) throw new Error('None of the cheats you picked can work online. Those need "Play solo with cheats".');
+    const rom = await this.localRom(sha);
+    const system = systems.thumbSystemForRom(rom.path);
+    return this.withBusy('Making the cheat version', async () => {
+      const romFile = this.library.romPath(rom);
+      const rd = await patcher.readRomData(romFile);
+      const result = cheatcodes.bake(system, rd.data, usable);
+      if (!result.applied.length) throw new Error(`None of the cheats fit this version of the game (${result.skipped[0].why}).`);
+      const name = patcher.outputName(rom.path, rd.inner, 'Cheats');
+      const dest = path.join(path.dirname(romFile), name);
+      if (this.hosting && this.library.romPath(this.hosting.rom) === dest) throw new Error("You're playing the cheat version right now. Finish the game first.");
+      await fs.promises.writeFile(`${dest}.part`, result.data);
+      await fs.promises.rename(`${dest}.part`, dest);
+      const rel = path.posix.join(path.posix.dirname(rom.path), name).replace(/^\.\//, '');
+      const newSha = await this.library.fileSha(rel);
+      this.log(`Made ${rel} with ${result.applied.length} cheat(s)`);
+      return {
+        path: rel, sha: newSha, applied: result.applied, skipped: result.skipped,
+        soloOnly: chosen.filter((c) => !c.multiplayer).map((c) => c.desc),
+      };
+    });
+  }
+
+  /** Bake the cheats in, then host the cheat version (your buddy downloads it when joining). */
+  async hostWithCheats(sha) {
+    const made = await this.makeCheatRom(sha);
+    await this.host(made.sha);
+    return made;
+  }
+
+  /** Play on your own with the switched-on cheats (any kind) through RetroArch's cheat engine. */
+  async playSolo(sha) {
+    this.assertRetroArchClosed();
+    const rom = await this.localRom(sha);
+    let coreName = config.coreForRom(this.cfg, rom.path);
+    if (!coreName) throw new Error(`No core is set for ${path.extname(rom.path)} files. Pick one in Settings → Cores.`);
+    if (!coreName.endsWith('_libretro')) coreName += '_libretro';
+    const core = await this.library.findCore(coreName);
+    if (!core) throw new Error(`${coreName} isn't installed. Get it in Settings → Cores.`);
+    const info = await this.gameCheats(sha);
+    const romFile = this.library.romPath(rom);
+    const overrides = { input_autodetect_enable: 'true' };
+    if (info.file && info.cheats.some((c) => c.on)) {
+      const all = cheats.parseCht(await fs.promises.readFile(info.file, 'latin1'));
+      const on = new Set(info.cheats.filter((c) => c.on).map((c) => c.index));
+      const list = all.map((c) => ({ ...c, enable: on.has(c.index) }));
+      const { cheatDir, infoDir } = await cheats.cheatPaths(config.retroarchCmd(this.cfg));
+      const folder = path.join(cheatDir, await cheats.coreDisplayName(infoDir, coreName));
+      // RetroArch names the file after the content; for a zip that can be the zip or the file in it.
+      const stems = new Set([path.basename(rom.path).replace(/\.[^.]+$/, '')]);
+      if (/\.zip$/i.test(rom.path)) {
+        for (const e of await patcher.zipCrcs(romFile).catch(() => [])) stems.add(path.basename(e.name).replace(/\.[^.]+$/, ''));
+      }
+      for (const stem of stems) await cheats.writeGameCheats(path.join(folder, `${stem}.cht`), list);
+      overrides.apply_cheats_after_load = 'true';
+      overrides.notification_show_cheats_applied = 'true';
+    }
+    this.playing = { rom, core, host: null, solo: true };
+    this.emitState();
+    const play = this.startPlay(rom, 'solo', null);
+    this.launch(this.cfg, 'solo', this.library.corePath(core), romFile, { overrides })
+      .catch((err) => this.log(err.message, 'error'))
+      .finally(() => { this.endPlay(play); this.playing = null; this.emitState(); });
+    return this.state();
   }
 
   // ----- installing updates -----------------------------------------------------

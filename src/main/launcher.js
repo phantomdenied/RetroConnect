@@ -23,7 +23,7 @@ function netplayOverrides(cfg, role, extra = {}) {
 }
 
 /**
- * role is "host" or "guest". Guests in relay mode load the game and join from
+ * role is "host", "guest" or "solo" (no netplay). Guests in relay mode load the game and join from
  * RetroArch's lobby, since a relay session only gets its ID at runtime.
  */
 function buildCommand(cfg, role, corePath, romPath, { connectTo = null, port = null, overridesPath = null, logFile = null } = {}) {
@@ -33,11 +33,11 @@ function buildCommand(cfg, role, corePath, romPath, { connectTo = null, port = n
   const p = String(port || cfg.netplayPort);
   if (role === 'host') {
     args.push('--host', '--port', p);
-  } else if (cfg.connectionMode !== 'relay') {
+  } else if (role === 'guest' && cfg.connectionMode !== 'relay') {
     if (!connectTo) throw new Error('No host address to connect to');
     args.push('--connect', connectTo, '--port', p);
   }
-  args.push('--nick', cfg.nickname);
+  if (role !== 'solo') args.push('--nick', cfg.nickname);
   if (overridesPath) args.push('--appendconfig', overridesPath);
   // RetroConnect follows the log to see who is Player 1/2 (for swapping players).
   if (logFile) args.push('--verbose', '--log-file', logFile);

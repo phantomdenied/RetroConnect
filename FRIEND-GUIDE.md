@@ -109,6 +109,22 @@ The **Files** page is for anything that isn't a game: save files, manuals, pictu
   like **Files (1)**. Open it and click **Download**. It goes into your
   **Downloads** folder, inside a folder called **RetroConnect**. Click **Show** to find it.
 
+## Cheats
+
+Click any game in the list and a panel opens on the right with a description and
+its cheats. The first time, click **Download cheats**.
+
+- Tick the cheats you want. The ones marked **Online** work when we play together:
+  click **Host with cheats** and your app makes a cheat copy of the game and hosts it.
+  When I join, my app downloads that copy, so we both have the cheats.
+- The ones marked **Solo** only work when you play alone: click **Play solo with cheats**.
+
+## Patching games
+
+The **Patcher** page puts translations and ROM hacks (.ips, .bps or .ups files)
+onto your games. Click **Choose a patch**; it finds the right game for you and
+checks it's the correct version before patching. Your original game stays as it was.
+
 ## Updates
 
 23. When there's a new version, a bar shows up at the top of the app.
