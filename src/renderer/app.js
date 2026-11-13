@@ -160,10 +160,13 @@ function render() {
   renderBanner();
   renderDiscord();
   $('#nav-friend').textContent = S.buddy && S.buddy.nickname ? `${S.buddy.nickname}'s games` : "Friend's games";
-  for (const v of ['games', 'friend', 'buddy', 'retroarch', 'settings']) $(`#view-${v}`).hidden = v !== view;
+  const newFiles = newIncomingCount();
+  $('#nav-files').textContent = newFiles ? `Files (${newFiles})` : 'Files';
+  for (const v of ['games', 'friend', 'files', 'buddy', 'retroarch', 'settings']) $(`#view-${v}`).hidden = v !== view;
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   if (view === 'games') renderGames();
   if (view === 'friend') renderFriend();
+  if (view === 'files') renderFiles();
   if (view === 'buddy') renderConnect();
   if (view === 'settings') renderSettings();
   if (view === 'retroarch') renderRetroArch();
@@ -269,6 +272,118 @@ function renderBanner() {
 
 let friendQuery = '';
 let friendFilter = 'all';
+
+// ----- Files page: send your buddy anything besides games ---------------------
+
+/** Files from one picked folder show as one row; loose files show one each. */
+function groupFiles(list) {
+  const out = [];
+  const byGroup = new Map();
+  for (const f of list) {
+    if (!f.group) { out.push({ key: f.id, name: f.name, files: [f] }); continue; }
+    let g = byGroup.get(f.group);
+    if (!g) { g = { key: `group:${f.group}`, name: f.group, folder: true, files: [] }; byGroup.set(f.group, g); out.push(g); }
+    g.files.push(f);
+  }
+  for (const g of out) g.size = g.files.reduce((a, f) => a + f.size, 0);
+  return out;
+}
+
+function fileIcon(g) {
+  if (g.folder) return 'DIR';
+  const ext = g.name.includes('.') ? g.name.split('.').pop() : '';
+  return (ext || 'FILE').slice(0, 4);
+}
+
+function fileMeta(g) {
+  const n = g.files.length;
+  return g.folder ? `Folder · ${n} file${n === 1 ? '' : 's'} · ${fmtBytes(g.size)}` : fmtBytes(g.size);
+}
+
+/** How many files the buddy offers that we haven't saved or dismissed. */
+function newIncomingCount() {
+  const f = S && S.files;
+  return f ? groupFiles(f.incoming.filter((i) => !i.savedTo && !i.dismissed)).length : 0;
+}
+
+async function addToSend(folders) {
+  const paths = await rc.pickSendFiles(folders);
+  if (paths && paths.length) await act(() => rc.sendFilesAdd(paths), { success: `Ready to send. ${buddyName()} will see it in a few seconds.` });
+}
+
+function renderFiles() {
+  const root = $('#view-files');
+  const b = S.buddy || {};
+  const name = b.nickname || 'Your friend';
+  const f = S.files || { outbox: [], incoming: [], receiveDir: '' };
+  const busy = Boolean(S.busy);
+  const online = b.status === 'online';
+
+  const outRows = groupFiles(f.outbox);
+  const sendCard = h('div', { class: 'card' },
+    h('h2', {}, `Send to ${name}`),
+    h('p', { class: 'muted small', style: 'margin-top:0' },
+      `Anything you add here shows up on ${name}'s Files page and they choose whether to download it. ` +
+      'Only these files are shared, nothing else on your PC. Keep RetroConnect open until they have it.'),
+    h('div', { class: 'row', style: 'flex-wrap:wrap;margin-bottom:12px' },
+      h('button', { class: 'btn primary', disabled: busy, onclick: () => addToSend(false) }, 'Add files'),
+      h('button', { class: 'btn', disabled: busy, onclick: () => addToSend(true) }, 'Add folder'),
+      outRows.length ? h('button', {
+        class: 'btn', disabled: busy,
+        onclick: () => act(() => rc.sendFilesRemove(outRows.map((g) => g.key)), { success: 'Stopped sharing all files' }),
+      }, 'Remove all') : null),
+    outRows.length
+      ? h('div', { class: 'games' }, outRows.map((g) => h('div', { class: 'game' },
+        h('span', { class: 'sys' }, fileIcon(g)),
+        h('div', { style: 'min-width:0' },
+          h('div', { class: 'title', title: g.name }, g.name),
+          h('div', { class: 'meta' }, fileMeta(g))),
+        h('span', { class: 'badge both' }, 'Shared'),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn small', onclick: () => act(() => rc.sendFilesRemove([g.key])) }, 'Remove')))))
+      : h('p', { class: 'muted' }, 'Nothing shared yet. Mods, save files, manuals, texture packs, videos: any file works.'));
+
+  const inRows = groupFiles(f.incoming.filter((i) => !i.dismissed || i.savedTo));
+  const pending = inRows.filter((g) => g.files.some((x) => !x.savedTo));
+  const recvCard = h('div', { class: 'card' },
+    h('h2', {}, `From ${name}`),
+    h('p', { class: 'muted small', style: 'margin-top:0' },
+      'Files go to ', h('b', {}, f.receiveDir), '. You can change that in Settings.'),
+    h('div', { class: 'row', style: 'flex-wrap:wrap;margin-bottom:12px' },
+      pending.length > 1 ? h('button', {
+        class: 'btn primary', disabled: busy || !online,
+        onclick: () => act(() => rc.receiveFiles(pending.flatMap((g) => g.files.filter((x) => !x.savedTo).map((x) => x.id))),
+          { success: (r) => `Saved ${r.saved.length} file(s)` }),
+      }, 'Download all') : null,
+      h('button', { class: 'btn', onclick: () => act(() => rc.openReceiveFolder()) }, 'Open folder')),
+    !online && b.status !== 'unset' ? h('p', { class: 'muted' }, `${name} is offline. Files they share show up here when RetroConnect is open on their PC.`) : null,
+    b.status === 'unset' ? h('p', { class: 'muted' }, 'Connect to your friend first (Connect page).') : null,
+    inRows.length
+      ? h('div', { class: 'games' }, inRows.map((g) => {
+        const ids = g.files.filter((x) => !x.savedTo).map((x) => x.id);
+        const done = !ids.length;
+        return h('div', { class: 'game' },
+          h('span', { class: 'sys' }, fileIcon(g)),
+          h('div', { style: 'min-width:0' },
+            h('div', { class: 'title', title: g.name }, g.name),
+            h('div', { class: 'meta' }, fileMeta(g))),
+          done ? h('span', { class: 'badge both' }, 'Saved') : h('span', { class: 'badge theirs' }, 'New'),
+          h('div', { class: 'actions' },
+            done
+              ? h('button', { class: 'btn small', onclick: () => act(() => rc.showReceived(g.files[0].id)) }, 'Show')
+              : h('button', {
+                class: 'btn small primary', disabled: busy || !online,
+                onclick: () => act(() => rc.receiveFiles(ids), { success: (r) => `Saved to ${r.dir}` }),
+              }, S.busy === 'Receiving files' ? 'Downloading…' : 'Download'),
+            done ? null : h('button', { class: 'btn small', onclick: () => act(() => rc.dismissFiles(ids)) }, 'Dismiss')));
+      }))
+      : online ? h('p', { class: 'muted' }, `Nothing from ${name} right now. When they add files on their Files page, they show up here.`) : null);
+
+  mount(root,
+    h('div', { class: 'view-head' }, h('h1', {}, 'Files')),
+    h('p', { class: 'muted', style: 'margin-top:-6px' }, `Swap anything that isn't a game with ${name}. It goes straight between your two PCs.`),
+    recvCard, sendCard);
+}
 
 function renderFriend() {
   const root = $('#view-friend');
@@ -896,6 +1011,9 @@ function renderSettings() {
         h('div', { class: 'field' }, h('label', {}, 'ROM folder'),
           h('div', { class: 'row' }, h('input', { type: 'text', value: d.romsDir, oninput: bind('romsDir') }), browse('romsDir', 'Choose your ROM folder')),
           h('div', { class: 'hint' }, 'Games from your buddy are saved here too.')),
+        h('div', { class: 'field' }, h('label', {}, 'Received files folder'),
+          h('div', { class: 'row' }, h('input', { type: 'text', value: d.receiveDir, placeholder: S.files ? `Default: ${S.files.receiveDir}` : '', oninput: bind('receiveDir') }), browse('receiveDir', 'Where should files from your buddy go?')),
+          h('div', { class: 'hint' }, 'Other files your buddy sends you (Files page). Leave empty for Downloads\\RetroConnect.')),
         h('div', { class: 'field' }, h('label', {}, 'RetroArch'),
           h('div', { class: 'row' },
             h('input', { type: 'text', value: raText, placeholder: `Auto: ${S.retroarch.command.join(' ') || 'not found'}`, oninput: (e) => { d.retroarchCommand = e.target.value.trim() ? [e.target.value.trim()] : []; } }),
@@ -1472,6 +1590,7 @@ async function boot() {
   rc.onInvite((s) => toast(`${s.host_nickname} is hosting ${gameTitle(s.rom.path)}. Click Join!`));
   rc.onThumbs(() => loadLibrary().catch(() => {}));
   rc.onSuggestion((sug) => toast(`${sug.from} wants to play ${gameTitle(sug.rom.path)}`));
+  rc.onFiles((info) => toast(`${info.from} wants to send you ${info.count === 1 ? info.names[0] : `${info.count} files`}. See the Files page.`));
   // Always keep an eye on connected controllers (cheap), so Host/Join use the right setup.
   window.addEventListener('gamepadconnected', refreshPads);
   window.addEventListener('gamepaddisconnected', refreshPads);

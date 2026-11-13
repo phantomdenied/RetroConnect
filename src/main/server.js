@@ -12,6 +12,7 @@
 //   GET /files/save/<rom sha256> the save itself
 //   GET /files/rom/<sha256>    a ROM, by content hash
 //   GET /files/core/<sha256>   a core, by content hash
+//   GET /files/send/<sha256>   a file the user chose to send (listed as `outbox` in /api/status)
 //
 // Files are only looked up by hash from our own scan, so nobody can ask for
 // arbitrary paths. `Range: bytes=N-` is honoured so downloads can resume.
@@ -22,6 +23,7 @@ const http = require('http');
 
 const FILE_ROUTE = /^\/files\/(rom|core)\/([0-9a-f]{64})$/;
 const SAVE_INFO_ROUTE = /^\/api\/save\/([0-9a-f]{64})$/;
+const SEND_FILE_ROUTE = /^\/files\/send\/([0-9a-f]{64})$/;
 const SAVE_FILE_ROUTE = /^\/files\/save\/([0-9a-f]{64})$/;
 const RANGE = /^bytes=(\d+)-$/;
 
@@ -41,6 +43,7 @@ class SyncServer {
     this.onNetplayProbe = null; // () => Promise<{ listening, port, error? }>
     this.onProbeBack = null; // (address, port) => Promise<{ reachable, error? }>
     this.onSaveLookup = null; // (romSha) => Promise<{ path, info } | null>
+    this.outbox = null; // transfer.Outbox: files picked to send the buddy
     this.index = null; // Map "kind:sha" -> absolute path
     this.server = http.createServer((req, res) => {
       this.handle(req, res).catch((err) => {
@@ -114,6 +117,7 @@ class SyncServer {
         discord_url: this.discordUrl || null,
         app_version: this.versions.app || null,
         retroarch_version: this.versions.retroarch || null,
+        outbox: this.outbox ? this.outbox.publicList() : [],
       });
     }
     if (url === '/api/netplay-probe' && this.onNetplayProbe) {
@@ -139,6 +143,12 @@ class SyncServer {
     }
     const m = FILE_ROUTE.exec(url);
     if (m) return this.sendFile(req, res, m[1], m[2]);
+    const sf = SEND_FILE_ROUTE.exec(url);
+    if (sf) {
+      // Only files the user put in the outbox, looked up by hash.
+      const file = this.outbox ? await this.outbox.lookup(sf[1]) : null;
+      return this.streamFile(req, res, file, 'file');
+    }
     const si = SAVE_INFO_ROUTE.exec(url) || SAVE_FILE_ROUTE.exec(url);
     if (si && this.onSaveLookup) {
       const found = await this.onSaveLookup(si[1]);

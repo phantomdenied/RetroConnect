@@ -52,6 +52,7 @@ function defaults() {
     retroEffects: true, // animated background (scrolling world / neon grid, CRT lines); off = still
     discordUrl: '', // invite or channel link for the Discord you both hang out in
     updateFeedUrl: '', // public JSON announcing new versions (overrides the built-in one)
+    receiveDir: '', // where files your buddy sends you go; empty = Downloads\RetroConnect
   };
 }
 
@@ -112,6 +113,7 @@ function normalize(raw = {}) {
   cfg.discordUrl = String(cfg.discordUrl || '').trim();
   if (cfg.discordUrl && !/^[a-z]+:\/\//i.test(cfg.discordUrl)) cfg.discordUrl = `https://${cfg.discordUrl}`;
   cfg.updateFeedUrl = String(cfg.updateFeedUrl || '').trim();
+  cfg.receiveDir = String(cfg.receiveDir || '').trim();
   if (!THEMES.includes(cfg.theme)) cfg.theme = 'pixel';
   return validate(cfg);
 }

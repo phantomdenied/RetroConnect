@@ -62,6 +62,10 @@ mismatched files. Then RetroArch launches and connects for both of you.
 - **Updates itself**: Download update, then Restart to update (below).
 - **Themes** (Settings → Theme): 8-bit platformer, Space shooter or Synthwave arcade, all
   original art drawn in code (no image files). Retro effects off stops the motion.
+- **Send files** (Files page): share anything that isn't a game (save files, manuals,
+  texture packs, mods, whole folders). Your buddy sees it within seconds and chooses
+  Download or Dismiss; it lands in DownloadsRetroConnect (changeable in Settings).
+  Only the files you add are reachable, by hash; downloads resume and are checked.
 
 ## Install (Windows)
 

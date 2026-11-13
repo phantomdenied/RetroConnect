@@ -99,6 +99,16 @@ code that starts with `RC1-`. You'll need it in step 9.
       **Swap players** in the bar at the top of RetroConnect.
 
 
+## Sending each other files
+
+The **Files** page is for anything that isn't a game: save files, manuals, pictures, mods.
+
+- **To send me something:** click **Add files** (or **Add folder**) and pick it.
+  Leave RetroConnect open until I've got it.
+- **When I send you something:** the Files button in the menu shows a number,
+  like **Files (1)**. Open it and click **Download**. It goes into your
+  **Downloads** folder, inside a folder called **RetroConnect**. Click **Show** to find it.
+
 ## Updates
 
 23. When there's a new version, a bar shows up at the top of the app.

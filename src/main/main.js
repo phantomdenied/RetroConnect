@@ -93,6 +93,28 @@ function wireIpc() {
   handle('ra-setup:info', () => controller.retroarchSetupInfo());
   handle('ra-setup:apply', (opts) => controller.applyRetroArchSettings(opts || {}));
   handle('cores:update', () => controller.updateCores());
+  handle('files:add', (paths) => controller.addToOutbox(Array.isArray(paths) ? paths.map(String) : []));
+  handle('files:remove', (ids) => controller.removeFromOutbox(Array.isArray(ids) ? ids : []));
+  handle('files:receive', (ids) => controller.receiveFiles(Array.isArray(ids) ? ids.map(String) : []));
+  handle('files:dismiss', (ids) => controller.dismissIncoming(Array.isArray(ids) ? ids.map(String) : []));
+  handle('files:openFolder', async () => {
+    const dir = controller.receiveDir();
+    fs.mkdirSync(dir, { recursive: true });
+    return shell.openPath(dir);
+  });
+  handle('files:show', (id) => {
+    const p = controller.received.saved[String(id)];
+    if (p && fs.existsSync(p)) shell.showItemInFolder(p);
+    else throw new Error("That file isn't there any more");
+    return true;
+  });
+  handle('dialog:sendFiles', async (folders) => {
+    const r = await dialog.showOpenDialog(win, {
+      title: folders ? 'Pick a folder to send' : 'Pick files to send',
+      properties: folders ? ['openDirectory'] : ['openFile', 'multiSelections'],
+    });
+    return r.canceled ? [] : r.filePaths;
+  });
   handle('ra-setup:cores', (names) => controller.installCores(Array.isArray(names) ? names : []));
   handle('ra-setup:all', (opts) => controller.setUpEverything(opts || {}));
   handle('ra-setup:open', () => controller.openRetroArch());
@@ -152,6 +174,17 @@ function wireController() {
       n.show();
     }
   });
+  controller.on('files', (info) => {
+    send('files', info);
+    if (Notification.isSupported() && !(win && win.isFocused())) {
+      const n = new Notification({
+        title: `${info.from} wants to send you ${info.count === 1 ? 'a file' : `${info.count} files`}`,
+        body: info.names.slice(0, 3).join(', ') + (info.count > 3 ? ', …' : ''),
+      });
+      n.on('click', () => { if (win) { win.show(); win.focus(); } });
+      n.show();
+    }
+  });
   controller.on('invite', (session) => {
     send('invite', session);
     if (Notification.isSupported() && !(win && win.isFocused())) {
@@ -170,6 +203,7 @@ app.whenReady().then(async () => {
   controller = new Controller({
     dataDir,
     version: app.getVersion(),
+    downloadsDir: app.getPath('downloads'),
     updateFeedDefault: (require('../../package.json').retroconnect || {}).updateFeedUrl || '',
     githubRepo: (require('../../package.json').retroconnect || {}).githubRepo || '',
     // Only an installed copy can update itself; the portable exe and `npm start` can't.

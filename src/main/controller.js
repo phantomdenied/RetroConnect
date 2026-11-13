@@ -18,7 +18,8 @@ const tailscaleLib = require('./tailscale');
 const updater = require('./updater');
 const invite = require('./invite');
 const raSetup = require('./retroarch-setup');
-const { fetchCoreFromBuildbot, HttpError } = require('./sync');
+const { fetchCoreFromBuildbot, HttpError, downloadFromHost } = require('./sync');
+const transfer = require('./transfer');
 const netcheck = require('./netcheck');
 const savesLib = require('./saves');
 const { ThumbCache } = require('./thumbnails');
@@ -79,6 +80,7 @@ class Controller extends EventEmitter {
     tailscale = tailscaleLib,
     updateFeedDefault = '', githubRepo = '', selfUpdate = false, fetchImpl = globalThis.fetch, resizeImage = null,
     netplaySend = netplayControl.sendCommand,
+    downloadsDir = path.join(require('os').homedir(), 'Downloads'),
   } = {}) {
     super();
     this.dataDir = dataDir;
@@ -128,6 +130,12 @@ class Controller extends EventEmitter {
     this.gameInfo = new gameinfo.GameInfoDb(path.join(dataDir, 'gameinfo'), { fetchImpl });
     this.historyFile = path.join(dataDir, 'history.json');
     this.history = { favorites: [], plays: [] };
+    // File transfer: what we offer our buddy, and what they offer us.
+    this.downloadsDir = downloadsDir;
+    this.outbox = new transfer.Outbox(path.join(dataDir, 'outbox.json'));
+    this.receivedFile = path.join(dataDir, 'received.json');
+    this.received = { saved: {}, dismissed: [], ...transfer.readJson(this.receivedFile, {}) };
+    this.incoming = []; // buddy's outbox, cleaned
   }
 
   // ----- lifecycle -----------------------------------------------------------
@@ -175,7 +183,7 @@ class Controller extends EventEmitter {
     if (this.server) await this.server.stop();
     this.server = null;
     this.serverError = null;
-    const wanted = this.cfg.sharedSecret && (this.cfg.shareLibrary || this.hosting || this.mySuggestion);
+    const wanted = this.cfg.sharedSecret && (this.cfg.shareLibrary || this.hosting || this.mySuggestion || this.outbox.items.length);
     if (!wanted) return;
     try {
       const server = new SyncServer({
@@ -190,6 +198,7 @@ class Controller extends EventEmitter {
       server.onRequest = (_url, addr) => this.noteBuddyAddress(addr);
       server.onProbeBack = (addr, port) => netcheck.tcpReachable(addr, port);
       server.onSaveLookup = (sha) => this.lookupSave(sha);
+      server.outbox = this.outbox;
       this.server = server;
     } catch (err) {
       this.serverError = err.code === 'EADDRINUSE'
@@ -234,6 +243,7 @@ class Controller extends EventEmitter {
       portCheck: this.portCheck || null,
       lag: this.lagInfo(),
       compat: this.compat,
+      files: this.filesState(),
       tailscale: {
         ...this.ts,
         canInstall: platforms.osName() === 'windows' || process.env.RETROCONNECT_ALLOW_TS_INSTALL === '1',
@@ -324,6 +334,7 @@ class Controller extends EventEmitter {
         suggestion: sug,
         discordUrl: config.isDiscordUrl(status.discord_url) ? status.discord_url : null,
       });
+      this.noteIncoming(transfer.cleanIncoming(status.outbox), m.nickname || 'Your buddy');
       if (sug && !(before.suggestion && before.suggestion.id === sug.id)) {
         this.emit('suggestion', sug);
         this.log(`${sug.from} suggests playing ${sug.rom.path}`);
@@ -674,6 +685,98 @@ class Controller extends EventEmitter {
       out.warnings.push({ kind: 'app', text: `${session.host_nickname} is on RetroConnect ${app}, you're on ${this.version}. Newer features may only work once you both update.` });
     }
     return out;
+  }
+
+  // ----- sending files ----------------------------------------------------------
+
+  receiveDir() {
+    return this.cfg.receiveDir || path.join(this.downloadsDir, 'RetroConnect');
+  }
+
+  filesState() {
+    const saved = this.received.saved;
+    const dismissed = new Set(this.received.dismissed);
+    return {
+      outbox: this.outbox.publicList(),
+      incoming: this.incoming.map((i) => ({ ...i, savedTo: saved[i.id] || null, dismissed: dismissed.has(i.id) })),
+      receiveDir: this.receiveDir(),
+    };
+  }
+
+  saveReceived() {
+    // Keep the record small: only ids the buddy still offers, plus the last 500.
+    const keep = (id) => this.incoming.some((i) => i.id === id);
+    const saved = Object.entries(this.received.saved);
+    this.received.saved = Object.fromEntries(saved.filter(([id], n) => keep(id) || n >= saved.length - 500));
+    this.received.dismissed = this.received.dismissed.filter((id, n, all) => keep(id) || n >= all.length - 500);
+    transfer.writeJson(this.receivedFile, this.received);
+  }
+
+  noteIncoming(list, who) {
+    const known = new Set(this.incoming.map((i) => i.id));
+    const fresh = list.filter((i) => !known.has(i.id) && !this.received.saved[i.id] && !this.received.dismissed.includes(i.id));
+    const changed = JSON.stringify(list) !== JSON.stringify(this.incoming);
+    this.incoming = list;
+    if (fresh.length && this.incomingSeeded) {
+      const what = fresh.length === 1 ? fresh[0].name : `${fresh.length} files`;
+      this.log(`${who} wants to send you ${what}`);
+      this.emit('files', { from: who, count: fresh.length, names: fresh.map((i) => i.name) });
+    }
+    this.incomingSeeded = true; // don't announce what was already waiting at startup as "new"
+    if (changed) this.emitState();
+  }
+
+  async addToOutbox(paths) {
+    if (!Array.isArray(paths) || !paths.length) return this.filesState();
+    await this.withBusy('Preparing files', () => this.outbox.add(paths, { onProgress: (p) => this.progress(p) }));
+    if (!this.server) await this.restartServer();
+    this.log(`Ready to send ${this.outbox.items.length} file(s) to your buddy`);
+    this.emitState();
+    return this.filesState();
+  }
+
+  async removeFromOutbox(ids) {
+    this.outbox.remove(Array.isArray(ids) ? ids.map(String) : []);
+    if (!this.outbox.items.length && this.server && !this.cfg.shareLibrary && !this.hosting && !this.mySuggestion) await this.restartServer();
+    this.emitState();
+    return this.filesState();
+  }
+
+  dismissIncoming(ids) {
+    for (const id of ids || []) if (!this.received.dismissed.includes(id)) this.received.dismissed.push(String(id));
+    this.saveReceived();
+    this.emitState();
+    return this.filesState();
+  }
+
+  /** Download files our buddy offered (by id), into the receive folder. */
+  async receiveFiles(ids) {
+    const want = new Set(ids || []);
+    const items = this.incoming.filter((i) => want.has(i.id));
+    if (!items.length) throw new Error("Those files aren't offered any more. Ask your buddy to add them again.");
+    return this.withBusy('Receiving files', async () => {
+      const client = this.client();
+      const dir = this.receiveDir();
+      const total = items.reduce((a, i) => a + i.size, 0);
+      let before = 0;
+      const saved = [];
+      for (const item of items) {
+        const { dest, already } = await transfer.destFor(dir, item.name, item.sha256);
+        if (!already) {
+          await downloadFromHost(client, 'send', item.sha256, item.size, dest, item.name,
+            (p) => this.progress({ label: `Receiving ${item.name}`, done: before + p.done, total: total || 1 }));
+        }
+        before += item.size;
+        this.received.saved[item.id] = dest;
+        this.received.dismissed = this.received.dismissed.filter((d) => d !== item.id);
+        saved.push(dest);
+        this.saveReceived();
+        this.emitState();
+      }
+      this.progress({ label: 'Receiving files', done: 1, total: 1, count: true });
+      this.log(`Saved ${saved.length} file(s) to ${dir}`);
+      return { saved, dir };
+    });
   }
 
   // ----- controllers ----------------------------------------------------------
