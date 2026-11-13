@@ -12,8 +12,25 @@ const config = require('./config');
 
 let win = null;
 let controller = null;
+let logFile = null;
 
-if (!app.requestSingleInstanceLock()) {
+/** Append to <data>/logs/main.log (kept under ~1 MB) so problems can be looked into afterwards. */
+function fileLog(message) {
+  if (!logFile) return;
+  try {
+    const st = fs.statSync(logFile, { throwIfNoEntry: false });
+    if (st && st.size > 1024 * 1024) fs.renameSync(logFile, `${logFile}.old`);
+    fs.appendFileSync(logFile, `${new Date().toISOString()} [${process.pid}] ${message}\n`);
+  } catch { /* logging must never break the app */ }
+}
+
+/** Short, non-reversible tag for a secret, so logs can tell two keys apart without containing them. */
+function fingerprint(secret) {
+  return secret ? require('crypto').createHash('sha256').update(String(secret)).digest('hex').slice(0, 8) : '(none)';
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
@@ -137,7 +154,12 @@ function wireIpc() {
     const r = await dialog.showOpenDialog(win, { title, filters, properties: ['openFile'] });
     return r.canceled ? null : r.filePaths[0];
   });
-  handle('open:path', (p) => shell.openPath(p));
+  handle('open:path', async (p) => {
+    if (!p || !fs.existsSync(p)) throw new Error(`That folder doesn't exist: ${p || '(not set)'}. Check Settings.`);
+    const err = await shell.openPath(p);
+    if (err) throw new Error(`Couldn't open ${p}: ${err}`);
+    return true;
+  });
   handle('open:url', (url) => {
     if (!/^https:\/\//.test(url)) throw new Error('Only https links can be opened');
     return shell.openExternal(url);
@@ -199,7 +221,12 @@ function wireController() {
 }
 
 app.whenReady().then(async () => {
+  if (!gotLock) return; // another copy is already open; this one is quitting
   const dataDir = process.env.RETROCONNECT_HOME || app.getPath('userData');
+  logFile = path.join(dataDir, 'logs', 'main.log');
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  fileLog(`start v${app.getVersion()} argv=${JSON.stringify(process.argv.slice(1))} cwd=${process.cwd()} dataDir=${dataDir}` +
+    ` home=${process.env.RETROCONNECT_HOME ? 'env' : 'userData'} lock=${gotLock}`);
   controller = new Controller({
     dataDir,
     version: app.getVersion(),
@@ -221,7 +248,13 @@ app.whenReady().then(async () => {
   });
   wireIpc();
   wireController();
+  controller.on('log', (e) => fileLog(`${e.level || 'info'}: ${e.message}`));
   await controller.init();
+  {
+    const st = controller.state();
+    fileLog(`ready config=${controller.configFile} roms=${st.config.romsDir} key=${fingerprint(st.config.sharedSecret)}` +
+      ` server=${st.server.running ? `port ${st.server.port}` : `off (${st.server.error || 'not needed'})`}`);
+  }
   protocol.handle('rcthumb', async (req) => {
     const sha = new URL(req.url).pathname.replace(/^\//, '');
     const file = controller.thumbFile(sha);
