@@ -102,6 +102,25 @@ function thumbUrl(system, name) {
   return `${BASE}/${encodeURIComponent(system)}/Named_Boxarts/${encodeURIComponent(sanitize(name))}.png`;
 }
 
+// The same covers live on GitHub (one repo per system, spaces -> "_"), which
+// keeps working when thumbnails.libretro.com is down or empty.
+const GITHUB_RAW = 'https://raw.githubusercontent.com/libretro-thumbnails';
+const GITHUB_API = 'https://api.github.com/repos/libretro-thumbnails';
+const repoOf = (system) => encodeURIComponent(system.replace(/ /g, '_'));
+
+function githubUrl(system, name) {
+  return `${GITHUB_RAW}/${repoOf(system)}/master/Named_Boxarts/${encodeURIComponent(sanitize(name))}.png`;
+}
+
+/** "Game (USA).7z" -> "Game (USA)"; "I.Q - Intelligent Qube (USA)" (no extension) stays whole. */
+function romBase(romPath) {
+  return path.basename(String(romPath)).replace(/\.[a-z0-9]{1,4}$/i, '');
+}
+
+// "Not found" markers. Renamed from .none so misses recorded while the
+// server was down are forgotten.
+const MISS = '.miss';
+
 class ThumbCache {
   /**
    * dir: cache folder; resize(buffer) -> smaller PNG buffer (optional).
@@ -122,7 +141,25 @@ class ThumbCache {
   has(sha) { return fs.existsSync(this.file(sha)); }
 
   isNegative(sha) {
-    try { return Date.now() - fs.statSync(path.join(this.dir, `${sha}.none`)).mtimeMs < NEGATIVE_TTL_MS; } catch { return false; }
+    try { return Date.now() - fs.statSync(path.join(this.dir, `${sha}${MISS}`)).mtimeMs < NEGATIVE_TTL_MS; } catch { return false; }
+  }
+
+  /** Forget every "no art found" and empty game list, so they are looked up again. Returns how many games. */
+  async forgetMisses() {
+    let n = 0;
+    let names = [];
+    try { names = await fsp.readdir(this.dir); } catch { return 0; }
+    for (const f of names) {
+      const full = path.join(this.dir, f);
+      if (f.endsWith(MISS) || f.endsWith('.none')) {
+        await fsp.rm(full, { force: true });
+        if (f.endsWith(MISS)) n++;
+      } else if (/^index-.*\.json$/.test(f)) {
+        try { if (!JSON.parse(await fsp.readFile(full, 'utf8')).length) await fsp.rm(full, { force: true }); } catch { await fsp.rm(full, { force: true }); }
+      }
+    }
+    this.indexes.clear();
+    return n;
   }
 
   /** Queue a lookup; resolves true if art is now cached. */
@@ -145,12 +182,53 @@ class ThumbCache {
     }
   }
 
-  async get(url) {
-    const res = await this.fetchImpl(url);
+  async get(url, hops = 0) {
+    let res;
+    try { res = await this.fetchImpl(url); } catch { return null; }
     if (!res.ok) return null;
     const type = res.headers.get('content-type') || '';
-    if (!type.startsWith('image/')) return null;
-    return Buffer.from(await res.arrayBuffer());
+    if (type.startsWith('image/')) return Buffer.from(await res.arrayBuffer());
+    // On GitHub, a cover shared by several names is a symlink: its "file" is the target's name.
+    if (url.startsWith(GITHUB_RAW) && type.startsWith('text/plain') && hops < 2 && res.text) {
+      const target = (await res.text()).trim();
+      if (/^[^\n]{1,250}\.png$/i.test(target)) return this.get(new URL(target.split('/').map(encodeURIComponent).join('/'), url).href, hops + 1);
+    }
+    return null;
+  }
+
+  /** Try libretro's server, then GitHub (first, once GitHub has had a cover the server didn't). */
+  async getCover(system, name) {
+    const urls = [thumbUrl(system, name), githubUrl(system, name)];
+    if (this.preferGithub) urls.reverse();
+    for (const u of urls) {
+      const png = await this.get(u);
+      if (png) {
+        if (u.startsWith(GITHUB_RAW)) this.preferGithub = true;
+        return png;
+      }
+    }
+    return null;
+  }
+
+  async listFromServer(system) {
+    try {
+      const res = await this.fetchImpl(`${BASE}/${encodeURIComponent(system)}/Named_Boxarts/`);
+      if (!res.ok) return [];
+      const html = await res.text();
+      return [...new Set([...html.matchAll(/href="([^"/]+)\.png"/g)].map((m) => {
+        try { return decodeURIComponent(m[1]); } catch { return null; }
+      }).filter(Boolean))];
+    } catch { return []; }
+  }
+
+  async listFromGithub(system) {
+    try {
+      const res = await this.fetchImpl(`${GITHUB_API}/${repoOf(system)}/git/trees/master:Named_Boxarts`,
+        { headers: { 'User-Agent': 'RetroConnect (https://github.com/phantomdenied/RetroConnect)', Accept: 'application/vnd.github+json' } });
+      if (!res.ok) return [];
+      const j = await res.json();
+      return (j.tree || []).filter((t) => /\.png$/i.test(t.path)).map((t) => t.path.replace(/\.png$/i, ''));
+    } catch { return []; }
   }
 
   async index(system) {
@@ -159,39 +237,46 @@ class ThumbCache {
         const file = path.join(this.dir, `index-${system.replace(/[^A-Za-z0-9]+/g, '_')}.json`);
         try {
           const st = await fsp.stat(file);
-          if (Date.now() - st.mtimeMs < INDEX_TTL_MS) return JSON.parse(await fsp.readFile(file, 'utf8'));
+          if (Date.now() - st.mtimeMs < INDEX_TTL_MS) {
+            const cached = JSON.parse(await fsp.readFile(file, 'utf8'));
+            if (cached.length) return cached;
+          }
         } catch { /* not cached yet */ }
-        const res = await this.fetchImpl(`${BASE}/${encodeURIComponent(system)}/Named_Boxarts/`);
-        if (!res.ok) return [];
-        const html = await res.text();
-        const names = [...new Set([...html.matchAll(/href="([^"/]+)\.png"/g)].map((m) => {
-          try { return decodeURIComponent(m[1]); } catch { return null; }
-        }).filter(Boolean))];
+        let names = await this.listFromServer(system);
+        if (!names.length) names = await this.listFromGithub(system);
+        if (!names.length) {
+          this.indexes.delete(system); // couldn't reach either: try again next time
+          return [];
+        }
         await fsp.mkdir(this.dir, { recursive: true });
         await fsp.writeFile(file, JSON.stringify(names));
         return names;
-      })().catch(() => []));
+      })().catch(() => { this.indexes.delete(system); return []; }));
     }
     return this.indexes.get(system);
   }
 
   async fetchOne(sha, romPath) {
     const system = systemFor(romPath);
-    const base = path.basename(romPath).replace(/\.[^.]+$/, '');
+    const base = romBase(romPath);
     const tries = [base, base.replace(/\s*\[[^\]]*\]/g, '').trim()];
     if (!/\(/.test(base)) for (const r of ['USA', 'World', 'Europe', 'Japan']) tries.push(`${base} (${r})`);
     let png = null;
     for (const name of [...new Set(tries)]) {
-      png = await this.get(thumbUrl(system, name));
+      png = await this.getCover(system, name);
       if (png) break;
     }
+    let list = null;
     if (!png) {
-      const match = bestMatch(await this.index(system), base);
-      if (match) png = await this.get(thumbUrl(system, match));
+      list = await this.index(system);
+      const match = bestMatch(list, base);
+      if (match) png = await this.getCover(system, match);
     }
     await fsp.mkdir(this.dir, { recursive: true });
     if (!png) {
-      await fsp.writeFile(path.join(this.dir, `${sha}.none`), '');
+      // Only remember "no art" when we could actually see the system's list;
+      // a server that's down shouldn't hide covers for a week.
+      if (list && list.length) await fsp.writeFile(path.join(this.dir, `${sha}${MISS}`), '');
       return false;
     }
     if (this.resize) {
@@ -203,4 +288,4 @@ class ThumbCache {
   }
 }
 
-module.exports = { ThumbCache, SYSTEMS, sanitize, cleanTitle, regionOf, bestMatch, thumbUrl, key };
+module.exports = { ThumbCache, SYSTEMS, sanitize, cleanTitle, regionOf, bestMatch, thumbUrl, githubUrl, romBase, key };

@@ -125,3 +125,36 @@ test('favorites, play history and covers in the library', async (t) => {
   lib = await c.getLibrary();
   assert.ok(lib.rows.every((r) => r.thumb === false));
 });
+
+test('box art: server down -> GitHub copy; nothing marked missing while unreachable; retry forgets misses', async () => {
+  const dir = tmpdir();
+  const sha = (c) => c.repeat(64);
+  let githubUp = true;
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.startsWith('https://thumbnails.libretro.com/')) return { ok: false, status: 404, headers: { get: () => 'text/html' } };
+    if (!githubUp) throw new Error('offline');
+    if (url.startsWith('https://api.github.com/repos/libretro-thumbnails/Sony_-_PlayStation/git/trees/master:Named_Boxarts')) {
+      return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ tree: [{ path: 'Alundra (USA).png' }, { path: 'Breath of Fire III (USA).png' }] }) };
+    }
+    const m = /libretro-thumbnails\/Sony_-_PlayStation\/master\/Named_Boxarts\/(.+)\.png$/.exec(url);
+    const name = m && decodeURIComponent(m[1]);
+    if (name === 'Alundra (USA)' || name === 'Breath of Fire III (USA)') return { ok: true, status: 200, headers: { get: () => 'image/png' }, arrayBuffer: async () => PNG };
+    if (name === 'Breath of Fire 3 (USA)') return { ok: true, status: 200, headers: { get: () => 'text/plain' }, text: async () => 'Breath of Fire III (USA).png' }; // a GitHub symlink
+    return { ok: false, status: 404, headers: { get: () => 'text/plain' } };
+  };
+  const cache = new thumbs.ThumbCache(dir, { fetchImpl });
+  assert.equal(await cache.ensure(sha('a'), 'PlayStation/Alundra (USA).7z'), true);
+  assert.equal(await cache.ensure(sha('b'), 'PlayStation/Breath of Fire 3 (USA).cue'), true, 'symlinked cover followed');
+  assert.equal(thumbs.romBase('PS1/I.Q - Intelligent Qube (USA)'), 'I.Q - Intelligent Qube (USA)');
+
+  githubUp = false; // both unreachable: no "missing" mark, so it's tried again later
+  assert.equal(await cache.ensure(sha('c'), 'PlayStation/Wild Arms (USA).cue'), false);
+  assert.equal(cache.isNegative(sha('c')), false);
+  githubUp = true;
+  assert.equal(await cache.ensure(sha('c'), 'PlayStation/Wild Arms (USA).cue'), false);
+  assert.equal(cache.isNegative(sha('c')), true, 'a real miss is remembered');
+  assert.equal(await cache.forgetMisses(), 1);
+  assert.equal(cache.isNegative(sha('c')), false);
+});

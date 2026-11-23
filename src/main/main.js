@@ -132,6 +132,7 @@ function wireIpc() {
     });
     return r.canceled ? [] : r.filePaths;
   });
+  handle('thumbs:retry', () => controller.retryBoxArt());
   handle('game:unpack', (sha) => controller.unpackGame(String(sha)));
   handle('game:describe', (romPath) => controller.gameDescription(String(romPath || '')));
   handle('cheats:get', (sha) => controller.gameCheats(String(sha)));

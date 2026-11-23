@@ -433,6 +433,13 @@ class Controller extends EventEmitter {
     return this.publicIpCache;
   }
 
+  /** Look up box art again for every game that had none. */
+  async retryBoxArt() {
+    const n = await this.thumbs.forgetMisses();
+    this.log(`Looking for box art again (${n} game${n === 1 ? '' : 's'} had none)`);
+    return { count: n };
+  }
+
   thumbFile(sha) {
     return /^[0-9a-f]{64}$/.test(sha) && this.thumbs.has(sha) ? this.thumbs.file(sha) : null;
   }
