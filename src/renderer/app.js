@@ -607,6 +607,7 @@ function filteredRows() {
     if (!passesFacets(r)) return false;
     if (filter === 'fav') return r.favorite;
     if (filter === 'recent') return Boolean(r.lastPlayed);
+    if (filter === 'unpack') return Boolean(r.mine && r.unpack);
     if (filter === 'ready') return r.status === 'both';
     if (filter === 'download') return r.status === 'theirs' || r.status === 'different';
     if (filter === 'mine') return r.status === 'mine' || r.status === 'unknown';
@@ -617,9 +618,31 @@ function filteredRows() {
   return rows;
 }
 
+const UNPACK_WHY = {
+  disc: "This disc game is inside a .zip/.7z. RetroArch only takes one file out of it, so music tracks go missing or the game won't start.",
+  noext: "This file is an archive whose name lost its .zip/.7z ending, so RetroArch can't tell what it is.",
+};
+
+function unpackGame(r) {
+  const name = r.mine.path.split('/').pop();
+  const ok = window.confirm(`Unpack ${name}?\n\n` +
+    'Its files (for a disc: the .cue and .bin tracks) are put in the same folder, and the archive goes to the Recycle Bin, so you can restore it from there.\n\n' +
+    `Unpacked games take more space. When you host it, ${buddyName()} downloads the unpacked version.`);
+  if (!ok) return;
+  if (drawer && drawer.path === r.path) drawer = null;
+  act(async () => { const res = await rc.unpackGame(r.mine.sha256); await loadLibrary(); return res; },
+    { success: (res) => `Unpacked: ${gameTitle(res.game)}. The archive is in the Recycle Bin.` });
+}
+
 function gameRow(r) {
   const canHost = r.mine && !S.hosting && !S.playing;
   const actions = [];
+  if (r.mine && r.unpack) {
+    actions.push(h('button', {
+      class: 'btn small warn', disabled: Boolean(S.busy) || !canHost, title: UNPACK_WHY[r.unpack],
+      onclick: () => unpackGame(r),
+    }, 'Unpack'));
+  }
   if (r.mine) {
     actions.push(h('button', {
       class: 'btn small primary', disabled: !canHost || !r.coreInstalled,
@@ -659,7 +682,9 @@ function gameRow(r) {
     h('div', { style: 'min-width:0' },
       h('div', { class: 'title', title: r.path }, starButton(r), gameTitle(r.path)),
       h('div', { class: 'meta', title: r.path }, metaLine(r, entry.size, `${core}${r.mine && !r.coreInstalled && r.coreName ? ' (not installed)' : ''}`))),
-    h('span', { class: `badge ${r.status}` }, r.status === 'theirs' ? `${buddyName()} has it` : STATUS_TEXT[r.status]),
+    r.mine && r.unpack
+      ? h('span', { class: 'badge different', title: UNPACK_WHY[r.unpack] }, 'Needs unpacking')
+      : h('span', { class: `badge ${r.status}` }, r.status === 'theirs' ? `${buddyName()} has it` : STATUS_TEXT[r.status]),
     h('div', { class: 'actions' }, actions));
 }
 
@@ -676,6 +701,8 @@ function renderGames() {
     ['fav', '★ Favorites', count((r) => r.favorite)],
     ['recent', 'Recently played', count((r) => r.lastPlayed)],
   ];
+  const unpackN = count((r) => r.mine && r.unpack);
+  if (unpackN || filter === 'unpack') chips.push(['unpack', '⚠ Needs unpacking', unpackN]);
   const search = h('input', {
     type: 'search', placeholder: 'Search games', value: query,
     oninput: (e) => { query = e.target.value; renderGameList(); },
@@ -1697,6 +1724,10 @@ function renderDrawer() {
         class: 'btn cyan', disabled: Boolean(S.busy),
         onclick: () => act(async () => { await rc.sync([r.theirs.sha256]); await loadLibrary(); }, { success: `Got ${gameTitle(r.path)}` }),
       }, 'Get it') : null),
+    r.mine && r.unpack ? h('div', { class: 'drawer-section' },
+      h('p', { class: 'warn-text small', style: 'margin-top:0' }, '⚠ ', UNPACK_WHY[r.unpack]),
+      h('button', { class: 'btn warn', disabled: Boolean(S.busy) || !canHost, onclick: () => unpackGame(r) }, 'Unpack it'),
+      h('p', { class: 'muted small', style: 'margin-bottom:0' }, "Until then RetroConnect unpacks it to a temporary folder each time you play, so it still works.")) : null,
     h('div', { class: 'drawer-section' },
       h('h2', {}, 'About'),
       d === undefined ? h('p', { class: 'muted small' }, 'Looking it up…')

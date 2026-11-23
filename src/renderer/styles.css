@@ -306,3 +306,5 @@ div.drawer-cover { height: 120px; display: flex; align-items: center; justify-co
 .pick-rom.selected { border-color: var(--accent); }
 .patch-done { margin-top: 14px; padding: 12px 14px; border-radius: 8px; border: 1px solid rgba(87,227,155,.5); background: rgba(87,227,155,.08); }
 .patch-done .big { font-weight: 700; }
+
+.btn.warn { border-color: var(--warn); color: var(--warn); background: transparent; }

@@ -24,6 +24,7 @@ const patcher = require('./patcher');
 const cheats = require('./cheats');
 const cheatcodes = require('./cheatcodes');
 const describe = require('./describe');
+const content = require('./content');
 const netcheck = require('./netcheck');
 const savesLib = require('./saves');
 const { ThumbCache } = require('./thumbnails');
@@ -85,6 +86,7 @@ class Controller extends EventEmitter {
     updateFeedDefault = '', githubRepo = '', selfUpdate = false, fetchImpl = globalThis.fetch, resizeImage = null,
     netplaySend = netplayControl.sendCommand,
     downloadsDir = path.join(require('os').homedir(), 'Downloads'),
+    trash = (p) => fs.promises.rm(p, { force: true }), // the app passes the Recycle Bin
   } = {}) {
     super();
     this.dataDir = dataDir;
@@ -142,6 +144,10 @@ class Controller extends EventEmitter {
     this.incoming = []; // buddy's outbox, cleaned
     this.descriptions = new describe.DescriptionCache(path.join(dataDir, 'descriptions.json'));
     this.cheatState = null; // { romSha: [cheat indices switched on] }
+    this.trash = trash;
+    this.unpackHintsFile = path.join(dataDir, 'unpack-hints.json');
+    this.unpackHints = transfer.readJson(this.unpackHintsFile, {}); // sha -> 'disc' | 'noext' | null
+    this.unpackQueue = null;
   }
 
   // ----- lifecycle -----------------------------------------------------------
@@ -397,6 +403,7 @@ class Controller extends EventEmitter {
         genre: info.genre,
         coreInstalled: Boolean(coreName && local.cores.some((c) => c.name === coreName)),
         thumb: this.cfg.showBoxArt && this.thumbs.has(sha),
+        unpack: row.mine ? this.unpackHints[row.mine.sha256] || null : null,
         favorite: favs.has(sha),
         lastPlayed: st ? st.last : null,
         playCount: st ? st.count : 0,
@@ -408,6 +415,7 @@ class Controller extends EventEmitter {
     for (const sys of new Set(rows.map((r) => this.gameInfo.lookup(r.path).system).filter(Boolean))) {
       this.gameInfo.ensure(sys).then((fresh) => { if (fresh) this.emit('gameinfo', sys); });
     }
+    this.checkUnpackHints(local.roms);
     if (this.cfg.showBoxArt) {
       // Fetch missing covers in the background; the window refreshes as they arrive.
       for (const r of rows) {
@@ -1101,7 +1109,7 @@ class Controller extends EventEmitter {
   }
 
   assertRetroArchClosed() {
-    if (this.hosting || this.playing) throw new Error('Close RetroArch (finish your game) first');
+    if (this.hosting || this.playing || this.launching) throw new Error('Close RetroArch (finish your game) first');
   }
 
   async applyRetroArchSettings(opts = {}) {
@@ -1541,7 +1549,10 @@ class Controller extends EventEmitter {
 
   /** Play on your own with the switched-on cheats (any kind) through RetroArch's cheat engine. */
   async playSolo(sha) {
-    this.assertRetroArchClosed();
+    return this.startingGame(() => this._playSolo(sha));
+  }
+
+  async _playSolo(sha) {
     const rom = await this.localRom(sha);
     let coreName = config.coreForRom(this.cfg, rom.path);
     if (!coreName) throw new Error(`No core is set for ${path.extname(rom.path)} files. Pick one in Settings → Cores.`);
@@ -1550,6 +1561,7 @@ class Controller extends EventEmitter {
     if (!core) throw new Error(`${coreName} isn't installed. Get it in Settings → Cores.`);
     const info = await this.gameCheats(sha);
     const romFile = this.library.romPath(rom);
+    const launchFile = await this.launchPath(rom.sha256, romFile);
     const overrides = { input_autodetect_enable: 'true' };
     if (info.file && info.cheats.some((c) => c.on)) {
       const all = cheats.parseCht(await fs.promises.readFile(info.file, 'latin1'));
@@ -1558,7 +1570,7 @@ class Controller extends EventEmitter {
       const { cheatDir, infoDir } = await cheats.cheatPaths(config.retroarchCmd(this.cfg));
       const folder = path.join(cheatDir, await cheats.coreDisplayName(infoDir, coreName));
       // RetroArch names the file after the content; for a zip that can be the zip or the file in it.
-      const stems = new Set([path.basename(rom.path).replace(/\.[^.]+$/, '')]);
+      const stems = new Set([path.basename(rom.path).replace(/\.[^.]+$/, ''), path.basename(launchFile).replace(/\.[^.]+$/, '')]);
       if (/\.zip$/i.test(rom.path)) {
         for (const e of await patcher.zipCrcs(romFile).catch(() => [])) stems.add(path.basename(e.name).replace(/\.[^.]+$/, ''));
       }
@@ -1569,7 +1581,7 @@ class Controller extends EventEmitter {
     this.playing = { rom, core, host: null, solo: true };
     this.emitState();
     const play = this.startPlay(rom, 'solo', null);
-    this.launch(this.cfg, 'solo', this.library.corePath(core), romFile, { overrides })
+    this.launch(this.cfg, 'solo', this.library.corePath(core), launchFile, { overrides })
       .catch((err) => this.log(err.message, 'error'))
       .finally(() => { this.endPlay(play); this.playing = null; this.emitState(); });
     return this.state();
@@ -1675,7 +1687,60 @@ class Controller extends EventEmitter {
     this.emit('progress', p);
   }
 
+  /**
+   * In the background, find games RetroArch can't open well as they are
+   * (disc images inside a .zip/.7z, archives whose name lost its extension).
+   */
+  checkUnpackHints(roms) {
+    if (this.unpackQueue) return;
+    const todo = roms.filter((r) => !(r.sha256 in this.unpackHints) && content.worthChecking(r.path, systems.coreKeyForRom(r.path)));
+    if (!todo.length) return;
+    this.unpackQueue = (async () => {
+      let found = 0;
+      for (const r of todo) {
+        let reason = null;
+        try { reason = await content.unpackReason(this.library.romPath(r)); } catch { reason = null; }
+        this.unpackHints[r.sha256] = reason;
+        if (reason) found++;
+      }
+      transfer.writeJson(this.unpackHintsFile, this.unpackHints);
+      if (found) this.emit('gameinfo', 'unpack');
+    })().catch(() => {}).finally(() => { this.unpackQueue = null; });
+  }
+
+  /** Unpack a game's archive next to it and send the archive to the Recycle Bin. */
+  async unpackGame(sha) {
+    this.assertRetroArchClosed();
+    const rom = await this.localRom(sha);
+    return this.withBusy('Unpacking', async () => {
+      const file = this.library.romPath(rom);
+      const names = await content.unpackInPlace(file, { remove: (p) => this.trash(p), onProgress: (p) => this.progress(p) });
+      delete this.unpackHints[rom.sha256];
+      transfer.writeJson(this.unpackHintsFile, this.unpackHints);
+      await fs.promises.rm(path.join(this.dataDir, 'discs', rom.sha256), { recursive: true, force: true }).catch(() => {});
+      this.log(`Unpacked ${rom.path} (${names.length} file${names.length === 1 ? '' : 's'}); the archive is in the Recycle Bin`);
+      const index = content.pickDiscIndex(names) || names[0];
+      return { names, game: path.posix.join(path.posix.dirname(rom.path), index.replace(/\\/g, '/')).replace(/^\.\//, '') };
+    });
+  }
+
+  /** The file RetroArch should open: disc archives are unpacked whole first (see content.js). */
+  async launchPath(sha, file) {
+    return content.prepare(file, sha, path.join(this.dataDir, 'discs'), { onProgress: (p) => this.progress(p), log: (m) => this.log(m) });
+  }
+
+  /** One game at a time: a second click while the first is still starting is refused. */
+  async startingGame(fn) {
+    if (this.hosting || this.playing || this.launching) throw new Error("A game is already starting or running");
+    this.launching = true;
+    try { return await fn(); } finally { this.launching = false; }
+  }
+
   async host(romSha, coreOverride = null) {
+    return this.startingGame(() => this._host(romSha, coreOverride));
+  }
+
+  async _host(romSha, coreOverride = null) {
     if (this.hosting) throw new Error("You're already hosting a game");
     const rom = await this.library.findRomBySha(romSha);
     if (!rom) throw new Error('That game is no longer in your ROM folder');
@@ -1687,6 +1752,7 @@ class Controller extends EventEmitter {
       throw new Error(`${coreName} isn't installed. Get it in RetroArch → Online Updater → Core Downloader.`);
     }
     if (!this.cfg.sharedSecret) throw new Error('Set up a shared secret first (Settings)');
+    const contentPath = await this.launchPath(rom.sha256, this.library.romPath(rom));
 
     this.clearSuggestion(); // you're playing now; no need to keep suggesting
     if (this.testListener) { this.testListener.close(); this.testListener = null; } // free the netplay port for RetroArch
@@ -1729,7 +1795,7 @@ class Controller extends EventEmitter {
         .then(() => (this.netplay === log ? this.setNetplayPlaying(true) : null))
         .catch(() => {});
     }
-    const done = this.launch(this.cfg, 'host', this.library.corePath(core), this.library.romPath(rom), { overrides, logFile },
+    const done = this.launch(this.cfg, 'host', this.library.corePath(core), contentPath, { overrides, logFile },
       { onSpawn: (child) => { if (this.hosting) this.hosting.child = child; } });
     done.catch((err) => this.log(err.message, 'error')).finally(async () => {
       this.stopNetplayLog();
@@ -1748,6 +1814,7 @@ class Controller extends EventEmitter {
   }
 
   async join() {
+    if (this.hosting || this.playing || this.launching) throw new Error("You're already in a game. Close RetroArch first.");
     return this.withBusy('Getting ready to join', async () => {
       const client = this.client();
       const session = await client.session();
@@ -1778,7 +1845,8 @@ class Controller extends EventEmitter {
       const play = this.startPlay(session.rom, 'guest', session.host_nickname);
       const logFile = this.startNetplayLog();
       this.followHostSwaps(client);
-      this.launch(cfg, 'guest', result.corePath, result.romPath,
+      const contentPath = await this.launchPath(session.rom.sha256, result.romPath);
+      this.launch(cfg, 'guest', result.corePath, contentPath,
         { connectTo: this.cfg.peerAddress, port: session.netplay_port, overrides, logFile })
         .catch((err) => this.log(err.message, 'error'))
         .finally(() => { this.stopNetplayLog(); this.endPlay(play); this.playing = null; this.emitState(); });

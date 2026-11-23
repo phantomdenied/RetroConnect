@@ -98,7 +98,7 @@ function extract(archive, destDir, onProgress, exe = sevenZipPath()) {
     child.on('error', (err) => reject(new Error(`Couldn't run 7-Zip: ${err.message}`)));
     child.on('exit', (code) => (code === 0
       ? resolve()
-      : reject(new Error(`Unpacking RetroArch failed: ${stderr.trim().split('\n').pop() || `7-Zip exit code ${code}`}`))));
+      : reject(new Error(`Unpacking failed: ${stderr.trim().split('\n').pop() || `7-Zip exit code ${code}`}`))));
   });
 }
 
@@ -147,4 +147,4 @@ async function install({ installDir, release = null, onProgress = null, log = ()
   }
 }
 
-module.exports = { latestStable, install, installedVersion, compareVersions, extract, archiveUrl, STABLE_INDEX };
+module.exports = { latestStable, install, installedVersion, compareVersions, extract, sevenZipPath, archiveUrl, STABLE_INDEX };

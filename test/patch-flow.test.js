@@ -125,3 +125,16 @@ test('cheats: database lookup, multiplayer copy, solo launch writes the game fil
   assert.match(cht, /cheat0_enable = true/);
   assert.match(cht, /cheat1_enable = true/);
 });
+
+test('two quick Host clicks start one game, not two', async (t) => {
+  const { c, roms, launches } = await setup(t);
+  const rom = Buffer.alloc(16 + 0x8000, 0xea);
+  rom.write('NES\x1a', 0, 'latin1');
+  rom[4] = 2;
+  write(path.join(roms, NES, 'Contra.nes'), rom);
+  const sha = (await c.library.scanRoms())[0].sha256;
+  const results = await Promise.allSettled([c.host(sha), c.host(sha)]);
+  assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
+  assert.match(results.find((r) => r.status === 'rejected').reason.message, /already/);
+  assert.equal(launches.filter((l) => l.role === 'host').length, 1);
+});

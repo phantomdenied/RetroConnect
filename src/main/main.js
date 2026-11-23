@@ -132,6 +132,7 @@ function wireIpc() {
     });
     return r.canceled ? [] : r.filePaths;
   });
+  handle('game:unpack', (sha) => controller.unpackGame(String(sha)));
   handle('game:describe', (romPath) => controller.gameDescription(String(romPath || '')));
   handle('cheats:get', (sha) => controller.gameCheats(String(sha)));
   handle('cheats:set', (sha, indices) => controller.setCheats(String(sha), indices));
@@ -261,6 +262,7 @@ app.whenReady().then(async () => {
     dataDir,
     version: app.getVersion(),
     downloadsDir: app.getPath('downloads'),
+    trash: (p) => shell.trashItem(p),
     updateFeedDefault: (require('../../package.json').retroconnect || {}).updateFeedUrl || '',
     githubRepo: (require('../../package.json').retroconnect || {}).githubRepo || '',
     // Only an installed copy can update itself; the portable exe and `npm start` can't.

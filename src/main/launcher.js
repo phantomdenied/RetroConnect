@@ -17,6 +17,9 @@ function netplayOverrides(cfg, role, extra = {}) {
   let out = cfgLine('netplay_nickname', cfg.nickname);
   out += cfgLine('netplay_use_mitm_server', useRelay ? 'true' : 'false');
   if (useRelay) out += cfgLine('netplay_mitm_server', cfg.relayServer);
+  // UPnP (opening the port on the router) only helps a Direct-mode host; over
+  // Tailscale or the relay it just fails with "UPnP port mapping failed".
+  if (role === 'host') out += cfgLine('netplay_nat_traversal', cfg.connectionMode === 'direct' ? 'true' : 'false');
   // Controller driver, player reservations and netplay slot for this session.
   for (const [k, v] of Object.entries(extra)) out += cfgLine(k, v);
   return out;

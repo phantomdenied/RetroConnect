@@ -29,6 +29,12 @@ mismatched files. Then RetroArch launches and connects for both of you.
   folder a game is in ("Nintendo - Super Nintendo Entertainment System", "SNES",
   "Genesis", ...), so zipped sets work; otherwise from the file extension.
   Settings → Cores still decides which core each system uses.
+- **Zipped disc games just work**: RetroArch only takes one file out of a
+  .zip/.7z, which breaks CD games (.cue + several .bin tracks). RetroConnect
+  unpacks those to a temporary folder when you play, and marks them
+  "Needs unpacking" with an **Unpack** button that puts the files next to the
+  archive for good and sends the archive to the Recycle Bin. Archives whose
+  name lost its .zip/.7z ending are caught too.
 - **Filters**: system, language, official / ROM hacks / homebrew, single
   player / multiplayer and genre. Player counts and genres come from
   libretro's game database (the one RetroArch uses), downloaded once per

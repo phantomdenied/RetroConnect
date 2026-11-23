@@ -129,8 +129,10 @@ test('send a file and a folder: the buddy sees them, downloads on request, gets 
 
   // Nothing is fetched until Sam asks; he just sees the offer.
   await until(() => sam.state().files.incoming.length === 3, 'sam to see the offer');
-  assert.equal(announced.length, 1);
-  assert.equal(announced[0].count, 3);
+  // A poll can land while files are still being added: one or two announcements, three files in all.
+  assert.ok(announced.length >= 1 && announced.length <= 2);
+  assert.equal(announced.reduce((n, x) => n + x.count, 0), 3);
+  const announcedBefore = announced.length;
   assert.equal(fs.existsSync(path.join(root, 'sam', 'Downloads', 'RetroConnect')), false);
 
   const pdf = sam.state().files.incoming.find((i) => i.name === 'Manual.pdf');
@@ -152,7 +154,7 @@ test('send a file and a folder: the buddy sees them, downloads on request, gets 
   // Dismissing hides an offer; removing it from the outbox makes it disappear for the buddy.
   await alex.removeFromOutbox(alex.state().files.outbox.filter((i) => i.name === 'Manual.pdf').map((i) => i.id));
   await until(() => sam.state().files.incoming.length === 2, 'the removed file to vanish');
-  assert.equal(announced.length, 1); // removals don't announce anything
+  assert.equal(announced.length, announcedBefore); // removals don't announce anything
 });
 
 test('a different receive folder can be set; a dismissed offer is remembered', async (t) => {

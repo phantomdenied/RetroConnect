@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('rc', {
   pickSendFiles: (folders) => call('dialog:sendFiles', Boolean(folders)),
   onFiles: on('files'),
   describeGame: (romPath) => call('game:describe', romPath),
+  unpackGame: (sha) => call('game:unpack', sha),
   cheats: (sha) => call('cheats:get', sha),
   setCheats: (sha, indices) => call('cheats:set', sha, indices),
   downloadCheats: () => call('cheats:download'),

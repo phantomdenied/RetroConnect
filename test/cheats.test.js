@@ -176,3 +176,11 @@ test('launcher: solo runs without netplay flags', () => {
   const [, g] = launcher.buildCommand(cfg, 'guest', 'core.dll', 'game.sfc', { connectTo: '1.2.3.4' });
   assert.ok(g.includes('--connect'));
 });
+
+test('launcher: UPnP only for a Direct-mode host', () => {
+  const nat = (mode, role) => (/netplay_nat_traversal = "(\w+)"/.exec(launcher.netplayOverrides({ nickname: 'a', connectionMode: mode, relayServer: 'x' }, role)) || [])[1];
+  assert.strictEqual(nat('direct', 'host'), 'true');
+  assert.strictEqual(nat('tailscale', 'host'), 'false');
+  assert.strictEqual(nat('relay', 'host'), 'false');
+  assert.strictEqual(nat('direct', 'guest'), undefined);
+});
